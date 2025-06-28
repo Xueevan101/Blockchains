@@ -30,7 +30,7 @@ def connect_with_middleware(contract_json):
 	url = "https://data-seed-prebsc-1-s1.binance.org:8545/"
 	w3 = Web3(HTTPProvider(url))
 
-	w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+	w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
 
 	assert w3.is_connected(), f"Failed to connect to BNB Testnet at {url}"
 	# The second section requires you to inject middleware into your w3 object and
