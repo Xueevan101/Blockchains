@@ -16,7 +16,7 @@ def pin_to_ipfs(data):
 
 	if response.ok:
 		ipfs_hash = response.json()['IpfsHash']
-	return f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}"
+		return f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}"
 	else:
 		raise Exception(f"Failed to pin data: {response.text}")
 
@@ -32,8 +32,8 @@ def get_from_ipfs(cid,content_type="json"):
 	if response.ok:
 		if content_type == "json":
 			data = response.json()
-	else:
-		raise ValueError("Only 'json' content_type is supported at the moment")
+		else:
+			raise ValueError("Only 'json' content_type is supported at the moment")
 	else:
 		raise Exception(f"Failed to retrieve content from IPFS: {response.text}")
 	assert isinstance(data,dict), f"get_from_ipfs should return a dict"
