@@ -6,7 +6,6 @@ def pin_to_ipfs(data):
 
   url = "https://api.pinata.cloud/pinning/pinJSONToIPFS"
 
-    # Replace with your actual API credentials
   headers = {
         "pinata_api_key": "YOUR_API_KEY",
         "pinata_secret_api_key": "YOUR_API_SECRET",
@@ -17,7 +16,6 @@ def pin_to_ipfs(data):
 
   if response.ok:
       ipfs_hash = response.json()['IpfsHash']
-      # Return full gateway URL
       return f"https://gateway.pinata.cloud/ipfs/{ipfs_hash}"
   else:
       raise Exception(f"Failed to pin data: {response.text}")
