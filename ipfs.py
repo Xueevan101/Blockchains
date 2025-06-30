@@ -10,8 +10,8 @@ def pin_to_ipfs(data):
         "pinataContent": data
     	}
 	headers = {
-        "pinata_api_key": "YOUR_API_KEY",
-        "pinata_secret_api_key": "YOUR_API_SECRET",
+        "pinata_api_key": "af9600d75aec06ac35ae",
+        "pinata_secret_api_key": "f4283784c4195bd20b5fab6eb160ade5d8351bd4dd66ee0ce0ceda61ea728d06",
         "Content-Type": "application/json"
 	}
 
