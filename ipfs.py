@@ -30,8 +30,7 @@ def get_from_ipfs(cid,content_type="json"):
 	#YOUR CODE HERE	
 	if cid.startswith("http"):
         	cid = cid.split("/")[-1]
-	url = f"https://gateway.pinata.cloud/ipfs/{cid}"
-
+	url = f"https://cloudflare-ipfs.com/ipfs/{cid}"
 	response = requests.get(url)
 
 	if response.ok:
