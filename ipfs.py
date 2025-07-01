@@ -32,13 +32,5 @@ def get_from_ipfs(cid,content_type="json"):
         	cid = cid.split("/")[-1]
 	url = f"https://ipfs.io/ipfs/{cid}"
 	response = requests.get(url)
-
-	if response.ok:
-		if content_type == "json":
-			data = response.json()
-		else:
-			raise ValueError("Only 'json' content_type is supported at the moment")
-	else:
-		raise Exception(f"Failed to retrieve content from IPFS: {response.text}")
 	assert isinstance(data,dict), f"get_from_ipfs should return a dict"
 	return data
