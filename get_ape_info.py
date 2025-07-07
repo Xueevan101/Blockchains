@@ -38,32 +38,25 @@ def get_ape_info(ape_id):
     data = {'owner': "", 'image': "", 'eyes': ""}
 
     try:
-        # 1. Get owner address
         owner = contract.functions.ownerOf(ape_id).call()
-
-        # 2. Get tokenURI (may start with "ipfs://")
         token_uri = contract.functions.tokenURI(ape_id).call()
-        if token_uri.startswith("ipfs://"):
-            token_uri = token_uri.replace("ipfs://", "https://ipfs.io/ipfs/")
 
-        # 3. Fetch metadata from tokenURI
-        response = requests.get(token_uri)
+        if token_uri.startswith("ipfs://"):
+            metadata_url = token_uri.replace("ipfs://", "https://ipfs.io/ipfs/")
+        else:
+            metadata_url = token_uri
+
+        response = requests.get(metadata_url)
         response.raise_for_status()
         metadata = response.json()
 
-        # 4. Extract image URI and eyes trait
-        image = metadata.get('image', "")
-        if image.startswith("ipfs://"):
-            image = image.replace("ipfs://", "https://ipfs.io/ipfs/")
-
-        # 5. Extract "Eyes" attribute
+        image = metadata.get('image', "")  # Don't rewrite the ipfs:// link
         eyes = ""
         for attr in metadata.get('attributes', []):
             if attr.get('trait_type') == "Eyes":
                 eyes = attr.get('value')
                 break
 
-        # Final dictionary
         data = {
             'owner': owner,
             'image': image,
@@ -73,7 +66,6 @@ def get_ape_info(ape_id):
     except Exception as e:
         print(f"Error retrieving ape {ape_id}: {e}")
 
-    # Validate return format
     assert isinstance(data, dict), f'get_ape_info({ape_id}) should return a dict'
     assert all([a in data.keys() for a in ['owner', 'image', 'eyes']]), f"return value should include the keys 'owner','image' and 'eyes'"
     return data
