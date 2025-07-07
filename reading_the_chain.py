@@ -102,12 +102,3 @@ if __name__ == "__main__":
             print(f"Block {block_num} is ordered")
         else:
             print(f"Block {block_num} is not ordered")
-
-!pip install web3
-
-"""The error you encountered, `ModuleNotFoundError: No module named 'web3'`, indicates that the required `web3` library is not installed in your current Python environment.
-
-To resolve this, you need to install the `web3` library using a package manager like `pip`. The cell I've added above will install the necessary library.
-
-Once the installation is complete, you should be able to run your original code without this specific error.
-"""
