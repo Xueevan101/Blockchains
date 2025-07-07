@@ -24,6 +24,9 @@ with open('ape_abi.json', 'r') as f:
 
 ############################
 # Connect to an Ethereum node
+json_data = {
+        "pinataContent": data
+}
 headers = {
         "pinata_api_key": "af9600d75aec06ac35ae",
         "pinata_secret_api_key": "f4283784c4195bd20b5fab6eb160ade5d8351bd4dd66ee0ce0ceda61ea728d06",
@@ -33,7 +36,7 @@ api_url = "https://api.pinata.cloud/pinning/pinJSONToIPFS"
 provider = HTTPProvider(api_url)
 web3 = Web3(provider)
 contract = web3.eth.contract(address=contract_address, abi=abi)
-
+response = requests.post(url, headers=headers, json=json_data)
 def get_ape_info(ape_id):
     assert isinstance(ape_id, int), f"{ape_id} is not an int"
     assert 0 <= ape_id, f"{ape_id} must be at least 0"
