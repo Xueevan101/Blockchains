@@ -27,7 +27,7 @@ with open('ape_abi.json', 'r') as f:
 api_url = "https://api.pinata.cloud/pinning/pinJSONToIPFS"
 provider = HTTPProvider(api_url)
 web3 = Web3(provider)
-
+contract = web3.eth.contract(address=contract_address, abi=abi)
 
 def get_ape_info(ape_id):
     assert isinstance(ape_id, int), f"{ape_id} is not an int"
