@@ -24,6 +24,11 @@ with open('ape_abi.json', 'r') as f:
 
 ############################
 # Connect to an Ethereum node
+headers = {
+        "pinata_api_key": "af9600d75aec06ac35ae",
+        "pinata_secret_api_key": "f4283784c4195bd20b5fab6eb160ade5d8351bd4dd66ee0ce0ceda61ea728d06",
+        "Content-Type": "application/json"
+}
 api_url = "https://api.pinata.cloud/pinning/pinJSONToIPFS"
 provider = HTTPProvider(api_url)
 web3 = Web3(provider)
