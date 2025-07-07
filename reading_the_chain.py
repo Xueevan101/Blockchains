@@ -13,14 +13,14 @@ from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.providers.rpc import HTTPProvider
 
-
+#function from previous assignment
 def connect_to_eth():
     url = "https://mainnet.infura.io/v3/bd562fa9921a4b1ba854b681adc30b5b"
     w3 = Web3(HTTPProvider(url))
     assert w3.is_connected(), f"Failed to connect to provider at {url}"
     return w3
 
-
+#function from previous assignment
 def connect_with_middleware(contract_json):
     with open(contract_json, "r") as f:
         d = json.load(f)
@@ -36,14 +36,12 @@ def connect_with_middleware(contract_json):
     contract = w3.eth.contract(address=Web3.to_checksum_address(address), abi=abi)
     return w3, contract
 
-
+#takes an ethereum block to calculate the fees (gas prices) for that block for the transaction
 def is_ordered_block(w3, block_num):
     block = w3.eth.get_block(block_num, full_transactions=True)
     base_fee = block.get('baseFeePerGas', None)
     txs = block.transactions
-
     priority_fees = []
-
     for tx in txs:
         tx_type = tx.get('type', '0x0')
         gas_price = tx.get('gasPrice')
