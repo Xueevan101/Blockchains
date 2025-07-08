@@ -45,13 +45,13 @@ def is_ordered_block(w3, block_num):
     for tx in txs:
         tx_type = tx.get('type', '0x0')
         gas_price = tx.get('gasPrice')
-
+#here we are calculating the fees. if the base_fee exists, subtract from the gas price to get priority fee
         if tx_type in (None, '0x0', 0):
             if base_fee is not None:
                 priority_fee = gas_price - base_fee
             else:
                 priority_fee = gas_price
-
+#here, we have a type 2 transaction where if there is a gas price, use it to calculate prioirity fee. Else we use a formula for the max priority fee
         elif tx_type in ('0x2', 2):
             if gas_price is not None:
                 priority_fee = gas_price - base_fee
