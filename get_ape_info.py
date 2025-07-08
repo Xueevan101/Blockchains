@@ -29,7 +29,7 @@ api_url = "https://mainnet.infura.io/v3/bd562fa9921a4b1ba854b681adc30b5b"
 provider = HTTPProvider(api_url)
 web3 = Web3(provider)
 contract = web3.eth.contract(address=contract_address, abi=abi)
-
+#we get a given ape_id and then return data which includes the owner, image and eyes
 def get_ape_info(ape_id):
     assert isinstance(ape_id, int), f"{ape_id} is not an int"
     assert 0 <= ape_id, f"{ape_id} must be at least 0"
@@ -38,20 +38,22 @@ def get_ape_info(ape_id):
     data = {'owner': "", 'image': "", 'eyes': ""}
 
     try:
+        #getting ape meta data info here from contract
         owner = contract.functions.ownerOf(ape_id).call()
         token_uri = contract.functions.tokenURI(ape_id).call()
-
+        #replace with standard url
         if token_uri.startswith("ipfs://"):
             metadata_url = token_uri.replace("ipfs://", "https://ipfs.io/ipfs/")
         else:
             metadata_url = token_uri
-
+        #getting actually metadata from contract in json
         response = requests.get(metadata_url)
         response.raise_for_status()
         metadata = response.json()
 
         image = metadata.get('image', "")  # Don't rewrite the ipfs:// link
         eyes = ""
+        #grab needed attributes from json file
         for attr in metadata.get('attributes', []):
             if attr.get('trait_type') == "Eyes":
                 eyes = attr.get('value')
