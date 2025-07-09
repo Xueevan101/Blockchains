@@ -52,5 +52,3 @@ if __name__ == "__main__":
             print("Signed Message Verified")
         else:
             print("Signed Message Failed to Verify")
-
-!pip install web3
