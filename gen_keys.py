@@ -26,7 +26,8 @@ def sign_message(challenge, filename="secret_key.txt"):
     signed_message = my_account.sign_message(message)
     crypto_addr = my_account.address
     assert eth_account.Account.recover_message(message, signature=signed_message.signature) == crypto_addr, "Didn't work"
-    return signed_message.signature.hex(), crypto_addr
+    return signed_message, crypto_addr
+
 
 
 if __name__ == "__main__":
