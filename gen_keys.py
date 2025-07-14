@@ -22,13 +22,10 @@ def sign_message(challenge, filename="secret_key.txt"):
     message = encode_defunct(challenge)
     # TODO recover your account information for your private key and sign the given challenge
     # Use the code from the signatures assignment to sign the given challenge
-    account = w3.eth.account.from_key(private_key)
-    signed_message = account.sign_message(message)
-    crypto_addr = account.address
-    assert eth_account.Account.recover_message(
-        message,
-        signature=signed_message.signature
-    ) == crypto_addr, "Didn't work"
+    eth_account = w3.eth.account.from_key(private_key)
+    signed_message = eth_account.sign_message(message)
+    crypto_addr = eth_account.address
+    assert eth_account.Account.recover_message(message, signature=signed_message.signature) == crypto_addr, "Didn't work"
     return signed_message.signature.hex(), crypto_addr
 
 
