@@ -11,7 +11,7 @@ from web3 import Web3
 import eth_account
 from eth_account.messages import encode_defunct
 
-
+#make a random account and sign with ethereum functions
 def sign(m):
     w3 = Web3()
     account_object = eth_account.Account.create()
@@ -21,10 +21,9 @@ def sign(m):
     signed_message = eth_account.Account.sign_message(message, private_key=private_key)
 
     assert isinstance(signed_message, eth_account.datastructures.SignedMessage)
-
     return public_key, signed_message
 
-
+#verify that we have a boolean value
 def verify(m, public_key, signed_message):
     w3 = Web3()
     message = encode_defunct(text=m)
