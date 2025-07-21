@@ -180,6 +180,8 @@ def send_signed_msg(proof, random_leaf):
         'gas': 300000,
         'gasPrice': w3.to_wei('5', 'gwei')
     })
+    signed_txn = w3.eth.account.sign_transaction(txn, private_key=acct.key)
+    tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
     return tx_hash.hex()
 
 
@@ -213,7 +215,8 @@ def get_account():
         sk = f.readline().rstrip()
     if sk[0:2] == "0x":
         sk = sk[2:]
-    return eth_account.Account.from_key(sk)
+    w3 = Web3()
+    return w3.eth.account.from_key(sk)
 
 
 def get_contract_info(chain):
