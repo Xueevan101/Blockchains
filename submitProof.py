@@ -39,7 +39,7 @@ def merkle_assignment():
         #  complete this method and run your code with the following line un-commented
         random_leaf_index = random_index = random.randint(1, 8191)
         proof = prove_merkle(tree, random_index)
-        # tx_hash = send_signed_msg(proof, leaves[random_index])
+        tx_hash = send_signed_msg(proof, leaves[random_index])
 
 
 def generate_primes(num_primes):
