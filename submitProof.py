@@ -151,7 +151,9 @@ def sign_challenge(challenge):
     eth_sk = acct.key
 
     # TODO YOUR CODE HERE
-    eth_sig_obj = 'placeholder'
+    msg = encode_defunct(text=challenge)
+    w3 = Web3()
+    eth_sig_obj = w3.eth.account.sign_message(msg, private_key=eth_sk)
 
     return addr, eth_sig_obj.signature.hex()
 
@@ -171,7 +173,19 @@ def send_signed_msg(proof, random_leaf):
     # TODO YOUR CODE HERE
     tx_hash = 'placeholder'
 
-    return tx_hash
+    contract = w3.eth.contract(address=address, abi=abi)
+
+    txn = contract.functions.claimLeaf(random_leaf, proof).build_transaction({
+        'from': acct.address,
+        'nonce': w3.eth.get_transaction_count(acct.address),
+        'gas': 300000,
+        'gasPrice': w3.to_wei('5', 'gwei')
+    })
+
+    signed_txn = w3.eth.account.sign_transaction(txn, private_key=acct.key)
+    tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+
+    return tx_hash.hex()
 
 
 # Helper functions that do not need to be modified
