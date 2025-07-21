@@ -101,6 +101,7 @@ def build_merkle(leaves):
         next_layer = []
 
         # Pad with duplicate of last element if odd number of elements
+        current_layer = tree[-1][:]
         if len(current_layer) % 2 != 0:
             current_layer.append(current_layer[-1])
 
