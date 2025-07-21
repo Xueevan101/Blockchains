@@ -172,8 +172,6 @@ def send_signed_msg(proof, random_leaf):
     w3 = connect_to(chain)
 
     # TODO YOUR CODE HERE
-    tx_hash = 'placeholder'
-
     contract = w3.eth.contract(address=address, abi=abi)
 
     txn = contract.functions.claimLeaf(random_leaf, proof).build_transaction({
@@ -186,6 +184,10 @@ def send_signed_msg(proof, random_leaf):
     signed_txn = w3.eth.account.sign_transaction(txn, private_key=acct.key)
     tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
 
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    print("Transaction receipt status:", receipt.status)
+    if receipt.status != 1:
+        print("Transaction failed on-chain!")
     return tx_hash.hex()
 
 
