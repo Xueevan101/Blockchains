@@ -37,9 +37,9 @@ def merkle_assignment():
         tx_hash = '0x'
         # TODO, when you are ready to attempt to claim a prime (and pay gas fees),
         #  complete this method and run your code with the following line un-commented
-        random_leaf_index = random.randint(1, len(leaves) - 1)
-        proof = prove_merkle(tree, random_leaf_index)
-        # tx_hash = send_signed_msg(proof, leaves[random_leaf_index])
+        random_leaf_index = random_index = random.randint(1, 8191)
+        proof = prove_merkle(tree, random_index)
+        # tx_hash = send_signed_msg(proof, leaves[random_index])
 
 
 def generate_primes(num_primes):
