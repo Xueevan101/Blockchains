@@ -24,25 +24,28 @@ contract Destination is AccessControl {
         _grantRole(CREATOR_ROLE, admin);
         _grantRole(WARDEN_ROLE, admin);
     }
-
-    function createToken(address _underlying_token, string memory name, string memory symbol)
-        public
-        onlyRole(CREATOR_ROLE)
-        returns (address)
-    {
-        require(underlying_tokens[_underlying_token] == address(0), "Already created");
-
-        BridgeToken wrapped = new BridgeToken(_underlying_token, name, symbol, address(this));
-        address wrappedAddr = address(wrapped);
-
-        underlying_tokens[_underlying_token] = wrappedAddr;
-        reverse_wrapped_tokens[wrappedAddr] = _underlying_token;
-        wrapped_tokens[_underlying_token] = wrappedAddr;
-	wrapped_tokens[wrappedAddr] = _underlying_token;
-        tokens.push(wrappedAddr);
-        emit Creation(_underlying_token, wrappedAddr);
-        return wrappedAddr;
-    }
+    function createToken(address underlying, string memory name, string memory symbol)
+	    public
+	    onlyRole(CREATOR_ROLE)
+	    returns (address)
+	{
+	    require(underlying_tokens[underlying] == address(0), "Token already registered");
+	
+	    // Deploy new BridgeToken with this contract as admin
+	    BridgeToken bridgeToken = new BridgeToken(underlying, name, symbol, address(this));
+	
+	    address bridgeAddr = address(bridgeToken);
+	
+	    // Store mappings
+	    underlying_tokens[underlying] = bridgeAddr;
+	    wrapped_tokens[underlying] = bridgeAddr;
+	    reverse_wrapped_tokens[bridgeAddr] = underlying;
+	
+	    tokens.push(bridgeAddr);
+	
+	    emit Creation(underlying, bridgeAddr);
+	    return bridgeAddr;
+	}
 
     function wrap(address _underlying_token, address _recipient, uint256 _amount)
         public
