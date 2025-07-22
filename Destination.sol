@@ -6,22 +6,24 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "./BridgeToken.sol";
 
 contract Destination is AccessControl {
+    bytes32 public constant WARDEN_ROLE = keccak256("BRIDGE_WARDEN_ROLE");
     bytes32 public constant CREATOR_ROLE = keccak256("CREATOR_ROLE");
-    bytes32 public constant WARDEN_ROLE = keccak256("WARDEN_ROLE");
 
-    event Creation(address indexed underlying, address indexed bridgeToken);
-    event Wrap(address indexed underlying, address indexed recipient, uint256 amount);
-    event Unwrap(address indexed bridgeToken, address indexed recipient, uint256 amount);
+    mapping(address => address) public underlying_tokens;
+    mapping(address => address) public reverse_wrapped_tokens;
+    mapping(address => address) public wrapped_tokens;
 
-    // Mapping from underlying token address to deployed BridgeToken
-    mapping(address => address) public bridgeTokens;
+    address[] public tokens;
 
-    constructor() {
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(CREATOR_ROLE, msg.sender);
-        _grantRole(WARDEN_ROLE, msg.sender);
+    event Creation(address indexed underlying_token, address indexed wrapped_token);
+    event Wrap(address indexed underlying_token, address indexed wrapped_token, address indexed to, uint256 amount);
+    event Unwrap(address indexed underlying_token, address indexed wrapped_token, address frm, address indexed to, uint256 amount);
+
+    constructor(address admin) {
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(CREATOR_ROLE, admin);
+        _grantRole(WARDEN_ROLE, admin);
     }
-
     function createToken(address underlying, string memory name, string memory symbol)
         external
         onlyRole(CREATOR_ROLE)
