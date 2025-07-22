@@ -38,7 +38,7 @@ contract Destination is AccessControl {
         underlying_tokens[_underlying_token] = wrappedAddr;
         reverse_wrapped_tokens[wrappedAddr] = _underlying_token;
         wrapped_tokens[_underlying_token] = wrappedAddr;
-
+        wrapped_tokens[wrappedAddr] = _underlying_token;
         tokens.push(wrappedAddr);
         emit Creation(_underlying_token, wrappedAddr);
         return wrappedAddr;
