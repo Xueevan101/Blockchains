@@ -17,8 +17,9 @@ contract Destination is AccessControl {
     mapping(address => address) public bridgeTokens;
 
     constructor() {
-        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _setupRole(CREATOR_ROLE, msg.sender);
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(CREATOR_ROLE, msg.sender);
+        _grantRole(WARDEN_ROLE, msg.sender);
     }
 
     function createToken(address underlying, string memory name, string memory symbol)
@@ -28,26 +29,26 @@ contract Destination is AccessControl {
     {
         require(bridgeTokens[underlying] == address(0), "Token already registered");
 
-        BridgeToken bridgeToken = new BridgeToken(name, symbol, underlying);
-        bridgeTokens[underlying] = address(bridgeToken);
+        BridgeToken newToken = new BridgeToken(underlying, name, symbol, address(this));
+        bridgeTokens[underlying] = address(newToken);
 
-        emit Creation(underlying, address(bridgeToken));
-        return address(bridgeToken);
+        emit Creation(underlying, address(newToken));
+        return address(newToken);
     }
 
     function wrap(address underlying, address recipient, uint256 amount)
         external
         onlyRole(WARDEN_ROLE)
     {
-        address bridgeTokenAddr = bridgeTokens[underlying];
-        require(bridgeTokenAddr != address(0), "Token not registered");
+        address tokenAddress = bridgeTokens[underlying];
+        require(tokenAddress != address(0), "Token not registered");
 
-        BridgeToken(bridgeTokenAddr).mint(recipient, amount);
+        BridgeToken(tokenAddress).mint(recipient, amount);
         emit Wrap(underlying, recipient, amount);
     }
 
     function unwrap(address bridgeTokenAddr, address recipient, uint256 amount) external {
-        ERC20Burnable token = ERC20Burnable(bridgeTokenAddr);
+        BridgeToken token = BridgeToken(bridgeTokenAddr);
         require(token.balanceOf(msg.sender) >= amount, "Insufficient balance");
 
         token.burnFrom(msg.sender, amount);
