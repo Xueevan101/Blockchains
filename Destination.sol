@@ -56,13 +56,13 @@ contract Destination is AccessControl {
         emit Wrap(_underlying_token, wrapped, _recipient, _amount);
     }
 
-    function unwrap(address _wrapped_token, address _recipient, uint256 _amount)
-        public
-    {
-        address underlying = reverse_wrapped_tokens[_wrapped_token];
-        require(underlying != address(0), "Not registered");
+  function unwrap(address bridgeTokenAddr, address recipient, uint256 amount) external {
+    require(underlying_tokens[bridgeTokenAddr] != address(0), "Not registered");
 
-        BridgeToken(_wrapped_token).burnFrom(msg.sender, _amount);
-        emit Unwrap(underlying, _wrapped_token, msg.sender, _recipient, _amount);
-    }
+    BridgeToken token = BridgeToken(bridgeTokenAddr);
+    require(token.balanceOf(msg.sender) >= amount, "Insufficient balance");
+
+    token.burnFrom(msg.sender, amount);
+    address underlying = underlying_tokens[bridgeTokenAddr];
+    emit Unwrap(underlying, bridgeTokenAddr, msg.sender, recipient, amount);
 }
