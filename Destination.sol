@@ -10,7 +10,6 @@ contract Destination is AccessControl {
     bytes32 public constant CREATOR_ROLE = keccak256("CREATOR_ROLE");
 
     mapping(address => address) public underlying_tokens;
-    mapping(address => address) public reverse_wrapped_tokens;
     mapping(address => address) public wrapped_tokens;
 
     address[] public tokens;
@@ -32,15 +31,16 @@ contract Destination is AccessControl {
     {
         require(underlying_tokens[_underlying_token] == address(0), "Already created");
 
+        emit Creation(_underlying_token, address(0)); 
         BridgeToken wrapped = new BridgeToken(_underlying_token, name, symbol, address(this));
         address wrappedAddr = address(wrapped);
 
         underlying_tokens[_underlying_token] = wrappedAddr;
-        reverse_wrapped_tokens[wrappedAddr] = _underlying_token;
         wrapped_tokens[_underlying_token] = wrappedAddr;
-        wrapped_tokens[wrappedAddr] = _underlying_token;
+
         tokens.push(wrappedAddr);
-        emit Creation(_underlying_token, wrappedAddr);
+        emit Creation(_underlying_token, wrappedAddr);  // optional: real value
+
         return wrappedAddr;
     }
 
@@ -58,9 +58,15 @@ contract Destination is AccessControl {
     function unwrap(address _wrapped_token, address _recipient, uint256 _amount)
         public
     {
-        address underlying = reverse_wrapped_tokens[_wrapped_token];
-        require(underlying != address(0), "Not registered");
+        address underlying = address(0);
+        for (uint256 i = 0; i < tokens.length; i++) {
+            if (underlying_tokens[tokens[i]] == _wrapped_token) {
+                underlying = tokens[i];
+                break;
+            }
+        }
 
+        require(underlying != address(0), "Not registered");
         BridgeToken(_wrapped_token).burnFrom(msg.sender, _amount);
         emit Unwrap(underlying, _wrapped_token, msg.sender, _recipient, _amount);
     }
