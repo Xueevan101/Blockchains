@@ -30,7 +30,7 @@ contract Destination is AccessControl {
     {
         require(underlying_tokens[_underlying_token] == address(0), "Already created");
 
-        BridgeToken wrapped = new BridgeToken(name, symbol, address(this));
+        BridgeToken wrapped = new BridgeToken(_underlying_token, name, symbol, address(this));
         address wrappedAddr = address(wrapped);
 
         underlying_tokens[_underlying_token] = wrappedAddr;
@@ -39,8 +39,7 @@ contract Destination is AccessControl {
 
         emit Creation(_underlying_token, wrappedAddr);
         return wrappedAddr;
-    }
-
+    } 
     function wrap(address _underlying_token, address _recipient, uint256 _amount)
         public
         onlyRole(WARDEN_ROLE)
