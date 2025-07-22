@@ -45,24 +45,28 @@ contract Destination is AccessControl {
 	    return wtoken;
 	}
 
-    function wrap(address _underlying_token, address _recipient, uint256 _amount)
-        public
-        onlyRole(WARDEN_ROLE)
-    {
-        address wrapped = underlying_tokens[_underlying_token];
-        require(wrapped != address(0), "Not registered");
+    function wrap(address underlying, address recipient, uint256 amount)
+	    external
+	    onlyRole(WARDEN_ROLE)
+	{
+	    address bridgeTokenAddr = wrapped_tokens[underlying];
+	    require(bridgeTokenAddr != address(0), "Token not registered");
+	
+	    BridgeToken(bridgeTokenAddr).mint(recipient, amount);
+	
+	    emit Wrap(underlying, bridgeTokenAddr, recipient, amount);
+	}
 
-        BridgeToken(wrapped).mint(_recipient, _amount);
-        emit Wrap(_underlying_token, wrapped, _recipient, _amount);
-    }
     function unwrap(address bridgeTokenAddr, address recipient, uint256 amount) external {
-	    require(underlying_tokens[bridgeTokenAddr] != address(0), "Not registered");
+	    address underlying = underlying_tokens[bridgeTokenAddr];
+	    require(underlying != address(0), "Not registered");
 	
 	    BridgeToken token = BridgeToken(bridgeTokenAddr);
 	    require(token.balanceOf(msg.sender) >= amount, "Insufficient balance");
 	
 	    token.burnFrom(msg.sender, amount);
-	    address underlying = underlying_tokens[bridgeTokenAddr];
+	
 	    emit Unwrap(underlying, bridgeTokenAddr, msg.sender, recipient, amount);
 	}
 }
+
