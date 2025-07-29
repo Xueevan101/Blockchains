@@ -20,7 +20,7 @@ contract Source is AccessControl {
         _grantRole(ADMIN_ROLE, admin);
         _grantRole(WARDEN_ROLE, admin);
     }
-
+    //here we quite simply check if we have an approved token greater than 0 and deposit it into the account
     function deposit(address _token, address _recipient, uint256 _amount) public {
         require(approved[_token], "Token not registered");
         require(_amount > 0, "Amount must be greater than zero");
@@ -30,7 +30,7 @@ contract Source is AccessControl {
 
         emit Deposit(_token, _recipient, _amount);
     }
-
+    //log a withdraw if greater than 0
     function withdraw(address _token, address _recipient, uint256 _amount) public onlyRole(WARDEN_ROLE) {
         require(_amount > 0, "Amount must be greater than zero");
 
@@ -39,7 +39,7 @@ contract Source is AccessControl {
 
         emit Withdrawal(_token, _recipient, _amount);
     }
-
+    //if not already registered, add token to array
     function registerToken(address _token) public onlyRole(ADMIN_ROLE) {
         require(!approved[_token], "Token already registered");
 
