@@ -38,13 +38,13 @@ contract AMM is AccessControl {
 
         address buyToken = (sellToken == tokenA) ? tokenB : tokenA;
 
-        // Pull sellAmount of sellToken from sender
+        //Pull sellAmount of sellToken from sender
         require(ERC20(sellToken).transferFrom(msg.sender, address(this), sellAmount), "Transfer failed");
 
         uint256 reserveIn = ERC20(sellToken).balanceOf(address(this)) - sellAmount; // exclude the new input
         uint256 reserveOut = ERC20(buyToken).balanceOf(address(this));
 
-        // Apply fee and compute output using constant product formula
+        //Apply fee and compute output using constant product formula
         uint256 amountInWithFee = (sellAmount * (10000 - feebps)) / 10000;
         uint256 numerator = amountInWithFee * reserveOut;
         uint256 denominator = reserveIn + amountInWithFee;
@@ -52,7 +52,7 @@ contract AMM is AccessControl {
 
         require(amountOut > 0, "Insufficient output amount");
 
-        // Transfer output tokens to user
+        //Transfer output tokens to user
         require(ERC20(buyToken).transfer(msg.sender, amountOut), "Transfer failed");
 
         emit Swap(sellToken, buyToken, sellAmount, amountOut);
@@ -61,27 +61,29 @@ contract AMM is AccessControl {
     }
 
     function provideLiquidity(uint256 amtA, uint256 amtB) public {
+        //instantiate both tokens have liquidity before we add them to the pool
         require(amtA > 0 || amtB > 0, 'Cannot provide 0 liquidity');
-
+        //send token A and token B to the address
         require(ERC20(tokenA).transferFrom(msg.sender, address(this), amtA), "Token A transfer failed");
         require(ERC20(tokenB).transferFrom(msg.sender, address(this), amtB), "Token B transfer failed");
-
+        //perform x * y = k
         invariant = ERC20(tokenA).balanceOf(address(this)) * ERC20(tokenB).balanceOf(address(this));
-
+        //record address of sender along with amount a and b
         emit LiquidityProvision(msg.sender, amtA, amtB);
     }
 
     function withdrawLiquidity(address recipient, uint256 amtA, uint256 amtB) public onlyRole(LP_ROLE) {
+        //Check if tokens are greater than 0, also check for correct original address
         require(amtA > 0 || amtB > 0, 'Cannot withdraw 0');
         require(recipient != address(0), 'Cannot withdraw to 0 address');
-
+        //transfer, similar to provide liquidity transfer
         if (amtA > 0) {
             require(ERC20(tokenA).transfer(recipient, amtA), "Token A transfer failed");
         }
         if (amtB > 0) {
             require(ERC20(tokenB).transfer(recipient, amtB), "Token B transfer failed");
         }
-
+        //calculate invariant for future pricing and then log the transaction
         invariant = ERC20(tokenA).balanceOf(address(this)) * ERC20(tokenB).balanceOf(address(this));
 
         emit Withdrawal(msg.sender, recipient, amtA, amtB);
