@@ -54,7 +54,7 @@ def scan_blocks(chain, start_block, end_block, contract_address, eventfile='depo
     print(f"Scanning blocks {start_block} - {end_block} on {chain}")
 
     logs = []
-
+#create function where we create our dictionary of the 6 values we need to log for the logger
     def process_events(events):
         for event in events:
             logs.append({
@@ -65,14 +65,14 @@ def scan_blocks(chain, start_block, end_block, contract_address, eventfile='depo
                 "transactionHash": event.transactionHash.hex(),
                 "address": event.address
             })
-
+#we start here, if the range of blocks is low
     if end_block - start_block < 30:
         event_filter = contract.events.Deposit.create_filter(
             from_block=start_block,
             to_block=end_block,
             argument_filters={}
         )
-        events = event_filter.get_all_entries()
+        events = event_filter.get_all_entries()  
         process_events(events)
     else:
         for block_num in range(start_block, end_block + 1):
@@ -83,10 +83,10 @@ def scan_blocks(chain, start_block, end_block, contract_address, eventfile='depo
             )
             events = event_filter.get_all_entries()
             process_events(events)
-
+#if logs exist, then create a dataframe of the logs and save them to csv, if not print nothing was found
     if logs:
         df = pd.DataFrame(logs)
         df.to_csv(eventfile, index=False)
         print(f"Saved {len(logs)} Deposit events to {eventfile}")
     else:
-        print("No Deposit events found in specified block range.")
+        print("No deposit event found in specified block range.")
