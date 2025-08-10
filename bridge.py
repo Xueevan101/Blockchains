@@ -4,6 +4,15 @@ from web3.middleware import ExtraDataToPOAMiddleware #Necessary for POA chains
 from datetime import datetime
 import json
 import pandas as pd
+import os
+
+# ── Warden key source ──────────────────────────────────────────────────────────
+# Fill this with your testnet private key if you prefer file-based config,
+# or leave it blank and set an env var:  export WARDEN_PRIVKEY=0xYOUR_KEY
+WARDEN_PRIVKEY = ""  # <-- put 0x... here if you don't want to use env var
+
+# How many blocks back to scan each run (assignment suggests small window)
+BLOCK_WINDOW = 5
 
 
 def connect_to(chain):
@@ -34,7 +43,6 @@ def get_contract_info(chain, contract_info):
     return contracts[chain]
 
 
-
 def scan_blocks(chain, contract_info="contract_info.json"):
     """
         chain - (string) should be either "source" or "destination"
@@ -43,43 +51,51 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         When Deposit events are found on the source chain, call the 'wrap' function the destination chain
         When Unwrap events are found on the destination chain, call the 'withdraw' function on the source chain
     """
+
     # This is different from Bridge IV where chain was "avax" or "bsc"
     if chain not in ['source','destination']:
-        print(f"Invalid chain: {chain}")
+        print( f"Invalid chain: {chain}" )
         return 0
 
-    # --- use your provided helper (no load_contract_info / get_contract) ---
+    # Load contract info entries
     src_info = get_contract_info("source", contract_info)
     dst_info = get_contract_info("destination", contract_info)
     if not src_info or not dst_info:
         print("contract_info.json missing source/destination entries")
         return 0
 
-    # Connect both chains
+    # RPC connections
     w3_src = connect_to("source")
     w3_dst = connect_to("destination")
 
-    # Build contract instances directly
-    src_c = w3_src.eth.contract(
-        address=Web3.to_checksum_address(src_info["address"]),
-        abi=src_info["abi"]
-    )
-    dst_c = w3_dst.eth.contract(
-        address=Web3.to_checksum_address(dst_info["address"]),
-        abi=dst_info["abi"]
-    )
-
-    # Warden key from env (0x-prefixed)
-    import os
-    from eth_account import Account
-    pk = os.environ.get("WARDEN_PRIVKEY")
-    if not pk:
-        print("WARDEN_PRIVKEY not set in environment")
+    # Build contract instances (addresses from JSON are assumed to be 0x-prefixed)
+    try:
+        src_c = w3_src.eth.contract(
+            address=Web3.to_checksum_address(src_info["address"]),
+            abi=src_info["abi"]
+        )
+        dst_c = w3_dst.eth.contract(
+            address=Web3.to_checksum_address(dst_info["address"]),
+            abi=dst_info["abi"]
+        )
+    except Exception as e:
+        print(f"Failed to construct contract instances: {e}")
         return 0
+
+    # Resolve warden private key: env first, then file placeholder above
+    pk = os.environ.get("WARDEN_PRIVKEY") or WARDEN_PRIVKEY
+    if not pk:
+        print("WARDEN_PRIVKEY not set in environment and WARDEN_PRIVKEY placeholder is empty")
+        return 0
+    if not pk.startswith("0x"):
+        pk = "0x" + pk  # normalize if user pasted without 0x
+
+    # Create signers from the same key on both chains
+    from eth_account import Account
     acct_src = Account.from_key(pk)
     acct_dst = Account.from_key(pk)
 
-    # Helper to send a tx
+    # Helper to build, sign, and send a tx
     def _send_tx(w3, acct, fn):
         tx = fn.build_transaction({
             "from": acct.address,
@@ -87,29 +103,27 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             "gasPrice": w3.eth.gas_price,
             "chainId": w3.eth.chain_id,
         })
-        # estimate gas with fallback
+        # Estimate gas with a safe fallback
         try:
             g = w3.eth.estimate_gas(tx)
-            tx["gas"] = int(g * 12 // 10)
+            tx["gas"] = int(g * 12 // 10)  # +20%
         except Exception:
             tx["gas"] = 400000
         signed = acct.sign_transaction(tx)
-        h = w3.eth.send_raw_transaction(signed.rawTransaction)
-        return h.hex()
+        return w3.eth.send_raw_transaction(signed.rawTransaction).hex()
 
-    BLOCK_WINDOW = 5
     processed = 0
 
     if chain == "source":
-        # Watch Fuji for Deposit → call wrap on BNB
+        # Deposit(token, recipient, amount) on Fuji -> call wrap(token, recipient, amount) on BNB
         latest = w3_src.eth.block_number
         frm = max(0, latest - BLOCK_WINDOW)
         to = latest
-        print(f"[source] Scanning Fuji blocks {frm}-{to} for Deposit...")
+        print(f"[source] Scanning Fuji blocks {frm}-{to} for Deposit events...")
         try:
             deposits = src_c.events.Deposit().get_logs(fromBlock=frm, toBlock=to)
         except Exception as e:
-            print(f"[source] get_logs Deposit failed: {e}")
+            print(f"[source] get_logs(Deposit) failed: {e}")
             deposits = []
 
         if not deposits:
@@ -129,15 +143,15 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                 print(f"[source] wrap() failed: {e}")
 
     else:  # chain == "destination"
-        # Watch BNB for Unwrap → call withdraw on Fuji
+        # Unwrap(..., recipient/to, amount) on BNB -> call withdraw(underlying, recipient, amount) on Fuji
         latest = w3_dst.eth.block_number
         frm = max(0, latest - BLOCK_WINDOW)
         to = latest
-        print(f"[destination] Scanning BNB blocks {frm}-{to} for Unwrap...")
+        print(f"[destination] Scanning BNB blocks {frm}-{to} for Unwrap events...")
         try:
             unwraps = dst_c.events.Unwrap().get_logs(fromBlock=frm, toBlock=to)
         except Exception as e:
-            print(f"[destination] get_logs Unwrap failed: {e}")
+            print(f"[destination] get_logs(Unwrap) failed: {e}")
             unwraps = []
 
         if not unwraps:
@@ -147,11 +161,12 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         for ev in unwraps:
             args = ev["args"]
             underlying = args.get("underlying") or args.get("underlying_token") or args.get("token")
-            recipient = args.get("recipient") or args.get("to")
-            amount = args.get("amount")
+            recipient  = args.get("recipient") or args.get("to")
+            amount     = args.get("amount")
             if underlying is None or recipient is None or amount is None:
                 print(f"[destination] Unwrap args not understood: {args}")
                 continue
+
             amount = int(amount)
             print(f"[destination] Unwrap → withdraw on Fuji: token={underlying} recipient={recipient} amount={amount}")
             try:
