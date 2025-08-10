@@ -98,36 +98,85 @@ def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_bu
     raise RuntimeError(f"Failed to send transaction after retries: {last_err}")
 
 
-def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=5):
+def _event_topic(contract, event_name):
+    """Compute the keccak topic for the event by name using the loaded ABI."""
+    ev_abi = None
+    for e in contract.abi:
+        if e.get("type") == "event" and e.get("name") == event_name:
+            ev_abi = e
+            break
+    if ev_abi is None:
+        raise ValueError(f"Event {event_name} not found in ABI")
+    return event_abi_to_log_topic(ev_abi)
+
+def _get_logs_batched(w3, address, topic0, start, end, batch_size=50, max_retries=3):
+    """Reliable batched eth_getLogs with backoff to avoid -32005 on BSC/Fuji."""
+    logs = []
+    current = start
+    while current <= end:
+        to_block = min(end, current + batch_size - 1)
+        params = {
+            "fromBlock": current,
+            "toBlock": to_block,
+            "address": address,
+            "topics": [topic0]
+        }
+        retries = 0
+        while True:
+            try:
+                batch = w3.eth.get_logs(params)
+                logs.extend(batch)
+                break
+            except Exception as e:
+                retries += 1
+                if retries > max_retries:
+                    # skip this slice and continue; provider may be flaky
+                    break
+                time.sleep(1.5 * retries)
+        current = to_block + 1
+    return logs
+
+def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=50):
     """
-    Return decoded event logs for the last n blocks for the given event.
-    Prefer event_obj.get_logs (Web3 v6) and fall back to per-block filtering if needed.
+    Robust scan for the last n blocks for the given event using eth_getLogs.
+    Falls back to per-block if needed.
     """
     head = w3.eth.block_number
     start = max(0, head - n_blocks + 1)
+    address = contract.address
+    # event name from the bound event
+    event_name = event_obj.event_name
+    topic0 = _event_topic(contract, event_name)
 
-    # First try a single-range get_logs (works well on many providers)
-    try:
-        entries = event_obj.get_logs(fromBlock=start, toBlock=head)
-        return entries
-    except Exception:
-        pass
+    # Primary path: small batched getLogs
+    entries = _get_logs_batched(w3, address, topic0, start, head, batch_size=25, max_retries=3)
+    if entries:
+        # Decode logs with the contract’s event ABI
+        decoded = []
+        for lg in entries:
+            try:
+                decoded.append(event_obj().process_log(lg))
+            except Exception:
+                pass
+        return decoded
 
-    # Fallback: per-block to avoid RPC range limits
+    # Final fallback: per-block (rarely needed)
     found = []
     for block_num in range(start, head + 1):
         try:
-            entries = event_obj.get_logs(fromBlock=block_num, toBlock=block_num)
-            found.extend(entries)
+            items = w3.eth.get_logs({
+                "fromBlock": block_num,
+                "toBlock": block_num,
+                "address": address,
+                "topics": [topic0]
+            })
+            for lg in items:
+                try:
+                    found.append(event_obj().process_log(lg))
+                except Exception:
+                    pass
         except Exception:
-            # final fallback to create_filter (older providers)
-            try:
-                flt = event_obj.create_filter(from_block=block_num, to_block=block_num)
-                entries = flt.get_all_entries()
-                found.extend(entries)
-            except Exception:
-                pass
-
+            pass
     return found
 
 def scan_blocks(chain, contract_info="contract_info.json"):
