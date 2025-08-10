@@ -1,7 +1,6 @@
 from web3 import Web3
 from web3.providers.rpc import HTTPProvider
 from web3.middleware import ExtraDataToPOAMiddleware  # Necessary for POA chains
-from datetime import datetime
 import json
 import os
 
@@ -10,7 +9,7 @@ import os
 #   export WARDEN_PRIVKEY=0xYOUR_TESTNET_PRIVATE_KEY
 WARDEN_PRIVKEY = "0xef1f86da85c3cd7822a0ce378a7abbd024c516f45ed9ad48b4cc9556cbb4e2f2"  # <-- paste 0x... here if you don't want to use env var
 
-# Small to avoid RPC limits / grader timeouts
+# Keep tiny to avoid RPC "limit exceeded" on public endpoints
 BLOCK_WINDOW = 2
 
 
@@ -21,7 +20,7 @@ def connect_to(chain):
     if chain == 'destination':  # The destination contract chain is bsc
         api_url = "https://data-seed-prebsc-1-s1.binance.org:8545/"  # BSC testnet
 
-    if chain in ['source', 'destination']:
+    if chain in ['source','destination']:
         w3 = Web3(Web3.HTTPProvider(api_url))
         # inject the poa compatibility middleware to the innermost layer
         w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
@@ -36,10 +35,10 @@ def get_contract_info(chain, contract_info):
         This function is used by the autograder and will likely be useful to you
     """
     try:
-        with open(contract_info, 'r') as f:
+        with open(contract_info, 'r')  as f:
             contracts = json.load(f)
     except Exception as e:
-        print(f"Failed to read contract info\nPlease contact your instructor\n{e}")
+        print( f"Failed to read contract info\nPlease contact your instructor\n{e}" )
         return 0
     return contracts[chain]
 
@@ -48,14 +47,14 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     """
         chain - (string) should be either "source" or "destination"
         Scan the last few blocks of the source and destination chains
-        Look for 'Deposit' events on the source chain and 'Unwrap' events on the destination chain
+        Look for 'Deposit' events on the source chain and 'Unwrap' (or 'Withdrawal') on the destination chain
         When Deposit events are found on the source chain, call 'wrap' on the destination chain
-        When Unwrap events are found on the destination chain, call 'withdraw' on the source chain
+        When Unwrap/Withdrawal events are found on the destination chain, call 'withdraw' on the source chain
     """
 
     # This is different from Bridge IV where chain was "avax" or "bsc"
-    if chain not in ['source', 'destination']:
-        print(f"Invalid chain: {chain}")
+    if chain not in ['source','destination']:
+        print( f"Invalid chain: {chain}" )
         return 0
 
     # Load contract metadata for both sides
@@ -134,22 +133,27 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                     raise e2
             raise
 
-    # Version-agnostic event fetching via eth_getLogs + process_log
-    def fetch_events(w3, contract, event, address, frm, to):
-        """
-        Use eth_getLogs with topic0 = keccak(event signature), decode via event().process_log.
-        Works across Web3.py versions and avoids create_filter signature differences.
-        Includes per-block fallback when RPC says "limit exceeded".
-        """
+    # Helper: compute topic0 for an event (by ABI)
+    def _topic_for(event):
         ev_abi = event._get_event_abi()
         ev_name = ev_abi["name"]
         ev_inputs = ",".join(inp["type"] for inp in ev_abi["inputs"])
-        sig_text = f"{ev_name}({ev_inputs})".strip()  # e.g., "Deposit(address,address,uint256)"
+        return Web3.keccak(text=f"{ev_name}({ev_inputs})").hex()
 
-        topic0 = Web3.keccak(text=sig_text).hex()
-        if not topic0.startswith("0x"):
-            topic0 = "0x" + topic0
+    # helper: OR of multiple topic0s (EVM accepts list-of-list for OR on the same index)
+    def _topics_or(*topics_hex):
+        arr = []
+        for t in topics_hex:
+            if t and t.startswith("0x"):
+                arr.append(t)
+        return [arr] if arr else None
 
+    # Version-agnostic event fetching via eth_getLogs + process_log, with per-block fallback
+    def fetch_events(w3, contract, topics0, address, frm, to, decoders):
+        """
+        topics0: list of topic0 hex strings to OR together at topics[0]
+        decoders: list of `contract.events.X` accessors to try when decoding
+        """
         addr = Web3.to_checksum_address(address)
 
         def _try_get_logs(_from, _to):
@@ -157,33 +161,37 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                 "fromBlock": int(_from),
                 "toBlock": int(_to),
                 "address": addr,
-                "topics": [topic0]
+                "topics": [_topics_or(*topics0)]
             })
 
         # Primary attempt
         try:
             raw_logs = _try_get_logs(frm, to)
         except Exception as e:
-            # detect "limit exceeded" (often ValueError with dict in args)
             emsg = str(e)
             if "limit exceeded" in emsg:
                 raw_logs = []
-                # per-block fallback
+                # per-block fallback to dodge RPC limits
                 for b in range(int(frm), int(to) + 1):
                     try:
                         raw_logs += _try_get_logs(b, b)
                     except Exception as e2:
-                        print(f"[logs] per-block get_logs failed at {b} for {ev_name}: {e2}")
+                        print(f"[logs] per-block get_logs failed at {b}: {e2}")
             else:
-                print(f"[logs] get_logs failed for {ev_name}: {e}")
+                print(f"[logs] get_logs failed: {e}")
                 return []
 
         decoded = []
         for log in raw_logs:
-            try:
-                decoded.append(event().process_log(log))
-            except Exception as e:
-                print(f"[logs] process_log failed for {ev_name}: {e}")
+            dec = None
+            for d in decoders:
+                try:
+                    dec = d().process_log(log)
+                    break
+                except Exception:
+                    dec = None
+            if dec:
+                decoded.append(dec)
         return decoded
 
     processed = 0
@@ -193,11 +201,18 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         # Watch Fuji for Deposit -> call wrap on BNB
         latest = w3_src.eth.block_number
         frm = max(0, latest - BLOCKS)
-        to = latest
+        to  = latest
         print(f"[source] Scanning Fuji blocks {frm}-{to} for Deposit events...")
 
+        topic_deposit = _topic_for(src_c.events.Deposit)
         deposits = fetch_events(
-            w3_src, src_c, src_c.events.Deposit, src_info["address"], frm, to
+            w3_src,
+            src_c,
+            topics0=[topic_deposit],
+            address=src_info["address"],
+            frm=frm,
+            to=to,
+            decoders=[src_c.events.Deposit]
         )
 
         if not deposits:
@@ -218,14 +233,42 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                 print(f"[source] wrap() failed: {e}")
 
     else:  # chain == "destination"
-        # Watch BNB for Unwrap -> call withdraw on Fuji
+        # Watch BNB for Unwrap (or Withdrawal) -> call withdraw on Fuji
         latest = w3_dst.eth.block_number
         frm = max(0, latest - BLOCKS)
-        to = latest
+        to  = latest
         print(f"[destination] Scanning BNB blocks {frm}-{to} for Unwrap events...")
 
+        topic_unwrap = None
+        topic_withdrawal = None
+        try:
+            topic_unwrap = _topic_for(dst_c.events.Unwrap)
+        except Exception:
+            pass
+        try:
+            topic_withdrawal = _topic_for(dst_c.events.Withdrawal)
+        except Exception:
+            pass
+
+        topics = [t for t in [topic_unwrap, topic_withdrawal] if t]
+        if not topics:
+            print("[destination] Neither Unwrap nor Withdrawal events found in ABI.")
+            return 0
+
+        decoders = []
+        if topic_unwrap:
+            decoders.append(dst_c.events.Unwrap)
+        if topic_withdrawal:
+            decoders.append(dst_c.events.Withdrawal)
+
         unwraps = fetch_events(
-            w3_dst, dst_c, dst_c.events.Unwrap, dst_info["address"], frm, to
+            w3_dst,
+            dst_c,
+            topics0=topics,
+            address=dst_info["address"],
+            frm=frm,
+            to=to,
+            decoders=decoders
         )
 
         if not unwraps:
@@ -234,10 +277,10 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
         for ev in unwraps:
             args = ev["args"]
-            # robust field handling just in case names differ
+            # robust field handling
             underlying = args.get("underlying") or args.get("underlying_token") or args.get("token")
-            recipient = args.get("recipient") or args.get("to")
-            amount = args.get("amount")
+            recipient  = args.get("recipient") or args.get("to")
+            amount     = args.get("amount")
             if underlying is None or recipient is None or amount is None:
                 print(f"[destination] Unwrap args not understood: {args}")
                 continue
