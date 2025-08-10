@@ -5,16 +5,8 @@ from eth_account import Account
 import json
 import time
 
-# -----------------------
-# Warden key (TESTNET ONLY)
-# -----------------------
 WARDEN_PRIVKEY = "0xef1f86da85c3cd7822a0ce378a7abbd024c516f45ed9ad48b4cc9556cbb4e2f2"
 WARDEN_ADDRESS = Account.from_key(WARDEN_PRIVKEY).address  # auto-derived
-
-
-# -----------------------
-# Connection + helpers
-# -----------------------
 
 def connect_to(chain):
     """
@@ -137,11 +129,6 @@ def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=5):
                 pass
 
     return found
-
-
-# -----------------------
-# Main bridge logic
-# -----------------------
 
 def scan_blocks(chain, contract_info="contract_info.json"):
     """
