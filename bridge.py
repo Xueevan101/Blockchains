@@ -115,16 +115,26 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     processed = 0
 
     if chain == "source":
-        # Deposit(token, recipient, amount) on Fuji -> call wrap(token, recipient, amount) on BNB
+        # Watch Fuji for Deposit -> call wrap on BNB
         latest = w3_src.eth.block_number
-        frm = max(0, latest - BLOCK_WINDOW)
+        frm = max(0, latest - 5)
         to = latest
         print(f"[source] Scanning Fuji blocks {frm}-{to} for Deposit events...")
+
+        # Version-agnostic event fetching (v6: create_filter; v5: createFilter)
+        deposits = []
         try:
-            deposits = src_c.events.Deposit().get_logs(fromBlock=frm, toBlock=to)
-        except Exception as e:
-            print(f"[source] get_logs(Deposit) failed: {e}")
-            deposits = []
+            # web3.py v6
+            f = src_c.events.Deposit.create_filter(fromBlock=frm, toBlock=to)
+            deposits = f.get_all_entries()
+        except AttributeError:
+            # web3.py v5
+            try:
+                f = src_c.events.Deposit.createFilter(fromBlock=frm, toBlock=to)
+                deposits = f.get_all_entries()
+            except Exception as e:
+                print(f"[source] Failed to create event filter (v5/v6): {e}")
+                deposits = []
 
         if not deposits:
             print("[source] No Deposit events found.")
@@ -142,17 +152,26 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             except Exception as e:
                 print(f"[source] wrap() failed: {e}")
 
-    else:  # chain == "destination"
-        # Unwrap(..., recipient/to, amount) on BNB -> call withdraw(underlying, recipient, amount) on Fuji
+    else:  # "destination"
+        # Watch BNB for Unwrap -> call withdraw on Fuji
         latest = w3_dst.eth.block_number
-        frm = max(0, latest - BLOCK_WINDOW)
+        frm = max(0, latest - 5)
         to = latest
         print(f"[destination] Scanning BNB blocks {frm}-{to} for Unwrap events...")
+
+        unwraps = []
         try:
-            unwraps = dst_c.events.Unwrap().get_logs(fromBlock=frm, toBlock=to)
-        except Exception as e:
-            print(f"[destination] get_logs(Unwrap) failed: {e}")
-            unwraps = []
+            # web3.py v6
+            f = dst_c.events.Unwrap.create_filter(fromBlock=frm, toBlock=to)
+            unwraps = f.get_all_entries()
+        except AttributeError:
+            # web3.py v5
+            try:
+                f = dst_c.events.Unwrap.createFilter(fromBlock=frm, toBlock=to)
+                unwraps = f.get_all_entries()
+            except Exception as e:
+                print(f"[destination] Failed to create event filter (v5/v6): {e}")
+                unwraps = []
 
         if not unwraps:
             print("[destination] No Unwrap events found.")
