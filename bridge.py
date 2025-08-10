@@ -1,17 +1,16 @@
 from web3 import Web3
 from web3.providers.rpc import HTTPProvider
-from web3.middleware import ExtraDataToPOAMiddleware # Necessary for POA chains
+from web3.middleware import ExtraDataToPOAMiddleware  # Necessary for POA chains
 from datetime import datetime
 import json
 import pandas as pd
 import os
 
-# ── Warden key ────────────────────────────────────────────────────────────────
-# Put your TESTNET private key here (0x...) or leave blank and set:
-#   export WARDEN_PRIVKEY=0xYOUR_TESTNET_PRIVATE_KEY
-WARDEN_PRIVKEY = "0xef1f86da85c3cd7822a0ce378a7abbd024c516f45ed9ad48b4cc9556cbb4e2f2"  # <-- leave empty if using env var
+# ── Warden key (TESTNET ONLY) ────────────────────────────────────────────────
+# Put your private key here (0x...) OR leave blank and: export WARDEN_PRIVKEY=0x...
+WARDEN_PRIVKEY = "0xef1f86da85c3cd7822a0ce378a7abbd024c516f45ed9ad48b4cc9556cbb4e2f2"  # <-- paste 0x... here if you don't want to use env var
 
-# How many blocks back to scan per run (small to avoid timeouts)
+# How many blocks back to scan each run
 BLOCK_WINDOW = 5
 
 
@@ -57,7 +56,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         print( f"Invalid chain: {chain}" )
         return 0
 
-    # Load contract metadata
+    # Load contract metadata for both sides
     src_info = get_contract_info("source", contract_info)
     dst_info = get_contract_info("destination", contract_info)
     if not src_info or not dst_info:
@@ -82,7 +81,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         print(f"Failed to construct contract instances: {e}")
         return 0
 
-    # Resolve warden private key (env first, then file placeholder)
+    # Resolve warden private key (env first, then placeholder)
     pk = os.environ.get("WARDEN_PRIVKEY") or WARDEN_PRIVKEY
     if not pk:
         print("WARDEN_PRIVKEY not set in environment and WARDEN_PRIVKEY placeholder is empty")
@@ -94,7 +93,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     acct_src = Account.from_key(pk)
     acct_dst = Account.from_key(pk)
 
-    # Helper: build, sign, send
+    # Helper: build, sign, send with gas estimate (+fallback)
     def _send_tx(w3, acct, fn):
         tx = fn.build_transaction({
             "from": acct.address,
@@ -102,35 +101,40 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             "gasPrice": w3.eth.gas_price,
             "chainId": w3.eth.chain_id,
         })
-        # estimate gas with a safe fallback
         try:
             g = w3.eth.estimate_gas(tx)
-            tx["gas"] = int(g * 12 // 10)  # +20%
+            tx["gas"] = int(g * 12 // 10)  # +20% buffer
         except Exception:
             tx["gas"] = 400000
         signed = acct.sign_transaction(tx)
         return w3.eth.send_raw_transaction(signed.rawTransaction).hex()
 
-    # Version-agnostic event fetching via w3.eth.get_logs + process_log
+    # Version-agnostic event fetching via eth_getLogs + process_log
     def fetch_events(w3, contract, event, address, frm, to):
         """
-        Use eth_getLogs with topics[0] = keccak(event signature), then decode with event.process_log.
-        Works across Web3.py versions.
+        Use eth_getLogs with topic0 = keccak(event signature), decode via event().process_log.
+        Works across Web3.py versions and avoids create_filter signature differences.
         """
-        # Build event signature topic
-        # Example: "Deposit(address,address,uint256)"
-        sig_text = f"{event.event_name}(" + ",".join([inp["type"] for inp in event._get_event_abi()["inputs"]]) + ")"
+        ev_abi = event._get_event_abi()
+        ev_name = ev_abi["name"]
+        ev_inputs = ",".join(inp["type"] for inp in ev_abi["inputs"])
+        sig_text = f"{ev_name}({ev_inputs})".strip()  # e.g., "Deposit(address,address,uint256)"
+
         topic0 = Web3.keccak(text=sig_text).hex()
+        if not topic0.startswith("0x"):
+            topic0 = "0x" + topic0
+
+        addr = Web3.to_checksum_address(address)
 
         try:
             raw_logs = w3.eth.get_logs({
-                "fromBlock": frm,
-                "toBlock": to,
-                "address": Web3.to_checksum_address(address),
+                "fromBlock": int(frm),
+                "toBlock": int(to),
+                "address": addr,
                 "topics": [topic0]
             })
         except Exception as e:
-            print(f"[logs] get_logs failed for {event.event_name}: {e}")
+            print(f"[logs] get_logs failed for {ev_name}: {e}")
             return []
 
         decoded = []
@@ -138,7 +142,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             try:
                 decoded.append(event().process_log(log))
             except Exception as e:
-                print(f"[logs] process_log failed for {event.event_name}: {e}")
+                print(f"[logs] process_log failed for {ev_name}: {e}")
         return decoded
 
     processed = 0
@@ -188,7 +192,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
         for ev in unwraps:
             args = ev["args"]
-            # try common field names just in case
+            # allow for slight naming differences
             underlying = args.get("underlying") or args.get("underlying_token") or args.get("token")
             recipient  = args.get("recipient") or args.get("to")
             amount     = args.get("amount")
