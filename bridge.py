@@ -111,29 +111,49 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         signed = acct.sign_transaction(tx)
         return w3.eth.send_raw_transaction(signed.rawTransaction).hex()
 
+    # Version-agnostic event fetching via w3.eth.get_logs + process_log
+    def fetch_events(w3, contract, event, address, frm, to):
+        """
+        Use eth_getLogs with topics[0] = keccak(event signature), then decode with event.process_log.
+        Works across Web3.py versions.
+        """
+        # Build event signature topic
+        # Example: "Deposit(address,address,uint256)"
+        sig_text = f"{event.event_name}(" + ",".join([inp["type"] for inp in event._get_event_abi()["inputs"]]) + ")"
+        topic0 = Web3.keccak(text=sig_text).hex()
+
+        try:
+            raw_logs = w3.eth.get_logs({
+                "fromBlock": frm,
+                "toBlock": to,
+                "address": Web3.to_checksum_address(address),
+                "topics": [topic0]
+            })
+        except Exception as e:
+            print(f"[logs] get_logs failed for {event.event_name}: {e}")
+            return []
+
+        decoded = []
+        for log in raw_logs:
+            try:
+                decoded.append(event().process_log(log))
+            except Exception as e:
+                print(f"[logs] process_log failed for {event.event_name}: {e}")
+        return decoded
+
     processed = 0
+    BLOCKS = BLOCK_WINDOW
 
     if chain == "source":
         # Watch Fuji for Deposit -> call wrap on BNB
         latest = w3_src.eth.block_number
-        frm = max(0, latest - BLOCK_WINDOW)
+        frm = max(0, latest - BLOCKS)
         to  = latest
         print(f"[source] Scanning Fuji blocks {frm}-{to} for Deposit events...")
 
-        # Version-agnostic event fetching
-        deposits = []
-        try:
-            # web3.py v6
-            f = src_c.events.Deposit.create_filter(fromBlock=frm, toBlock=to)
-            deposits = f.get_all_entries()
-        except AttributeError:
-            try:
-                # web3.py v5
-                f = src_c.events.Deposit.createFilter(fromBlock=frm, toBlock=to)
-                deposits = f.get_all_entries()
-            except Exception as e:
-                print(f"[source] Failed to create Deposit filter (v5/v6): {e}")
-                deposits = []
+        deposits = fetch_events(
+            w3_src, src_c, src_c.events.Deposit, src_info["address"], frm, to
+        )
 
         if not deposits:
             print("[source] No Deposit events found.")
@@ -154,23 +174,13 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     else:  # chain == "destination"
         # Watch BNB for Unwrap -> call withdraw on Fuji
         latest = w3_dst.eth.block_number
-        frm = max(0, latest - BLOCK_WINDOW)
+        frm = max(0, latest - BLOCKS)
         to  = latest
         print(f"[destination] Scanning BNB blocks {frm}-{to} for Unwrap events...")
 
-        unwraps = []
-        try:
-            # web3.py v6
-            f = dst_c.events.Unwrap.create_filter(fromBlock=frm, toBlock=to)
-            unwraps = f.get_all_entries()
-        except AttributeError:
-            try:
-                # web3.py v5
-                f = dst_c.events.Unwrap.createFilter(fromBlock=frm, toBlock=to)
-                unwraps = f.get_all_entries()
-            except Exception as e:
-                print(f"[destination] Failed to create Unwrap filter (v5/v6): {e}")
-                unwraps = []
+        unwraps = fetch_events(
+            w3_dst, dst_c, dst_c.events.Unwrap, dst_info["address"], frm, to
+        )
 
         if not unwraps:
             print("[destination] No Unwrap events found.")
@@ -178,6 +188,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
         for ev in unwraps:
             args = ev["args"]
+            # try common field names just in case
             underlying = args.get("underlying") or args.get("underlying_token") or args.get("token")
             recipient  = args.get("recipient") or args.get("to")
             amount     = args.get("amount")
