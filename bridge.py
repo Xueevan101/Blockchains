@@ -3,29 +3,31 @@ from web3.providers.rpc import HTTPProvider
 from web3.middleware import ExtraDataToPOAMiddleware  # Necessary for POA chains
 from datetime import datetime
 import json
-import pandas as pd
 import os
 
 # ── Warden key (TESTNET ONLY) ────────────────────────────────────────────────
-# Put your private key here (0x...) OR leave blank and: export WARDEN_PRIVKEY=0x...
+# Put your private key here (0x...) OR leave blank and export:
+#   export WARDEN_PRIVKEY=0xYOUR_TESTNET_PRIVATE_KEY
 WARDEN_PRIVKEY = "0xef1f86da85c3cd7822a0ce378a7abbd024c516f45ed9ad48b4cc9556cbb4e2f2"  # <-- paste 0x... here if you don't want to use env var
 
-# How many blocks back to scan each run
-BLOCK_WINDOW = 5
+# Small to avoid RPC limits / grader timeouts
+BLOCK_WINDOW = 2
 
 
 def connect_to(chain):
     if chain == 'source':  # The source contract chain is avax
-        api_url = f"https://api.avax-test.network/ext/bc/C/rpc"  # AVAX C-chain testnet
+        api_url = "https://api.avax-test.network/ext/bc/C/rpc"  # AVAX C-chain testnet
 
     if chain == 'destination':  # The destination contract chain is bsc
-        api_url = f"https://data-seed-prebsc-1-s1.binance.org:8545/"  # BSC testnet
+        api_url = "https://data-seed-prebsc-1-s1.binance.org:8545/"  # BSC testnet
 
-    if chain in ['source','destination']:
+    if chain in ['source', 'destination']:
         w3 = Web3(Web3.HTTPProvider(api_url))
         # inject the poa compatibility middleware to the innermost layer
         w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
-    return w3
+        return w3
+
+    raise ValueError(f"Invalid chain: {chain}")
 
 
 def get_contract_info(chain, contract_info):
@@ -34,10 +36,10 @@ def get_contract_info(chain, contract_info):
         This function is used by the autograder and will likely be useful to you
     """
     try:
-        with open(contract_info, 'r')  as f:
+        with open(contract_info, 'r') as f:
             contracts = json.load(f)
     except Exception as e:
-        print( f"Failed to read contract info\nPlease contact your instructor\n{e}" )
+        print(f"Failed to read contract info\nPlease contact your instructor\n{e}")
         return 0
     return contracts[chain]
 
@@ -45,15 +47,15 @@ def get_contract_info(chain, contract_info):
 def scan_blocks(chain, contract_info="contract_info.json"):
     """
         chain - (string) should be either "source" or "destination"
-        Scan the last 5 blocks of the source and destination chains
+        Scan the last few blocks of the source and destination chains
         Look for 'Deposit' events on the source chain and 'Unwrap' events on the destination chain
-        When Deposit events are found on the source chain, call the 'wrap' function the destination chain
-        When Unwrap events are found on the destination chain, call the 'withdraw' function on the source chain
+        When Deposit events are found on the source chain, call 'wrap' on the destination chain
+        When Unwrap events are found on the destination chain, call 'withdraw' on the source chain
     """
 
     # This is different from Bridge IV where chain was "avax" or "bsc"
-    if chain not in ['source','destination']:
-        print( f"Invalid chain: {chain}" )
+    if chain not in ['source', 'destination']:
+        print(f"Invalid chain: {chain}")
         return 0
 
     # Load contract metadata for both sides
@@ -93,15 +95,19 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     acct_src = Account.from_key(pk)
     acct_dst = Account.from_key(pk)
 
-    # Helper: build, sign, send with gas estimate (+fallback)
-    def _send_tx(w3, acct, fn):
+    # Nonce managers (pending, then increment locally)
+    dst_nonce = w3_dst.eth.get_transaction_count(acct_dst.address, block_identifier="pending")
+    src_nonce = w3_src.eth.get_transaction_count(acct_src.address, block_identifier="pending")
+
+    # Helper: build, sign, send with gas estimate (+fallback) and nonce handling
+    def _send_tx(w3, acct, fn, nonce):
         tx = fn.build_transaction({
-        "from": acct.address,
-        "nonce": w3.eth.get_transaction_count(acct.address),
-        "gasPrice": w3.eth.gas_price,
-        "chainId": w3.eth.chain_id,
+            "from": acct.address,
+            "nonce": nonce,
+            "gasPrice": w3.eth.gas_price,
+            "chainId": w3.eth.chain_id,
         })
-    # Estimate gas with a safe fallback
+        # estimate gas with a safe fallback
         try:
             g = w3.eth.estimate_gas(tx)
             tx["gas"] = int(g * 12 // 10)  # +20%
@@ -109,17 +115,31 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             tx["gas"] = 400000
 
         signed = acct.sign_transaction(tx)
-    # web3.py v5: rawTransaction, v6: raw_transaction
         raw = getattr(signed, "rawTransaction", None) or getattr(signed, "raw_transaction", None)
         if raw is None:
-            raise RuntimeError("Could not find raw transaction bytes on SignedTransaction")
+            raise RuntimeError("Could not find raw tx bytes on SignedTransaction")
 
-        return w3.eth.send_raw_transaction(raw).hex()
+        try:
+            return w3.eth.send_raw_transaction(raw).hex()
+        except Exception as e:
+            # If replacement/nonce issues arise, bump gas price and retry once with SAME nonce
+            msg = str(e)
+            if ("replacement transaction underpriced" in msg) or ("nonce too low" in msg):
+                try:
+                    tx["gasPrice"] = int(int(tx["gasPrice"]) * 11 // 10) or (w3.eth.gas_price + 1_000_000_000)
+                    signed2 = acct.sign_transaction(tx)
+                    raw2 = getattr(signed2, "rawTransaction", None) or getattr(signed2, "raw_transaction", None)
+                    return w3.eth.send_raw_transaction(raw2).hex()
+                except Exception as e2:
+                    raise e2
+            raise
+
     # Version-agnostic event fetching via eth_getLogs + process_log
     def fetch_events(w3, contract, event, address, frm, to):
         """
         Use eth_getLogs with topic0 = keccak(event signature), decode via event().process_log.
         Works across Web3.py versions and avoids create_filter signature differences.
+        Includes per-block fallback when RPC says "limit exceeded".
         """
         ev_abi = event._get_event_abi()
         ev_name = ev_abi["name"]
@@ -132,16 +152,31 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
         addr = Web3.to_checksum_address(address)
 
-        try:
-            raw_logs = w3.eth.get_logs({
-                "fromBlock": int(frm),
-                "toBlock": int(to),
+        def _try_get_logs(_from, _to):
+            return w3.eth.get_logs({
+                "fromBlock": int(_from),
+                "toBlock": int(_to),
                 "address": addr,
                 "topics": [topic0]
             })
+
+        # Primary attempt
+        try:
+            raw_logs = _try_get_logs(frm, to)
         except Exception as e:
-            print(f"[logs] get_logs failed for {ev_name}: {e}")
-            return []
+            # detect "limit exceeded" (often ValueError with dict in args)
+            emsg = str(e)
+            if "limit exceeded" in emsg:
+                raw_logs = []
+                # per-block fallback
+                for b in range(int(frm), int(to) + 1):
+                    try:
+                        raw_logs += _try_get_logs(b, b)
+                    except Exception as e2:
+                        print(f"[logs] per-block get_logs failed at {b} for {ev_name}: {e2}")
+            else:
+                print(f"[logs] get_logs failed for {ev_name}: {e}")
+                return []
 
         decoded = []
         for log in raw_logs:
@@ -158,7 +193,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         # Watch Fuji for Deposit -> call wrap on BNB
         latest = w3_src.eth.block_number
         frm = max(0, latest - BLOCKS)
-        to  = latest
+        to = latest
         print(f"[source] Scanning Fuji blocks {frm}-{to} for Deposit events...")
 
         deposits = fetch_events(
@@ -175,8 +210,9 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             amount = int(ev["args"]["amount"])
             print(f"[source] Deposit → wrap on BNB: token={token} recipient={recipient} amount={amount}")
             try:
-                txh = _send_tx(w3_dst, acct_dst, dst_c.functions.wrap(token, recipient, amount))
+                txh = _send_tx(w3_dst, acct_dst, dst_c.functions.wrap(token, recipient, amount), nonce=dst_nonce)
                 print(f"[source] wrap() tx: {txh}")
+                dst_nonce += 1
                 processed += 1
             except Exception as e:
                 print(f"[source] wrap() failed: {e}")
@@ -185,7 +221,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         # Watch BNB for Unwrap -> call withdraw on Fuji
         latest = w3_dst.eth.block_number
         frm = max(0, latest - BLOCKS)
-        to  = latest
+        to = latest
         print(f"[destination] Scanning BNB blocks {frm}-{to} for Unwrap events...")
 
         unwraps = fetch_events(
@@ -198,10 +234,10 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
         for ev in unwraps:
             args = ev["args"]
-            # allow for slight naming differences
+            # robust field handling just in case names differ
             underlying = args.get("underlying") or args.get("underlying_token") or args.get("token")
-            recipient  = args.get("recipient") or args.get("to")
-            amount     = args.get("amount")
+            recipient = args.get("recipient") or args.get("to")
+            amount = args.get("amount")
             if underlying is None or recipient is None or amount is None:
                 print(f"[destination] Unwrap args not understood: {args}")
                 continue
@@ -209,8 +245,9 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             amount = int(amount)
             print(f"[destination] Unwrap → withdraw on Fuji: token={underlying} recipient={recipient} amount={amount}")
             try:
-                txh = _send_tx(w3_src, acct_src, src_c.functions.withdraw(underlying, recipient, amount))
+                txh = _send_tx(w3_src, acct_src, src_c.functions.withdraw(underlying, recipient, amount), nonce=src_nonce)
                 print(f"[destination] withdraw() tx: {txh}")
+                src_nonce += 1
                 processed += 1
             except Exception as e:
                 print(f"[destination] withdraw() failed: {e}")
