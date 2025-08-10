@@ -107,28 +107,29 @@ def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_bu
 
 
 def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=5):
-    """
-    Return decoded event logs for the last n blocks for the given event.
-    Prefer event_obj.get_logs (Web3 v6) and fall back to per-block filtering if needed.
-    """
     head = w3.eth.block_number
     start = max(0, head - n_blocks + 1)
 
-    # First try a single-range get_logs (works well on many providers)
+    # Try a single-range get_logs first
     try:
-        entries = event_obj.get_logs(fromBlock=start, toBlock=head)
-        return entries
+        return event_obj.get_logs(fromBlock=start, toBlock=head)
     except Exception:
         pass
 
-    # Fallback: per-block to avoid RPC range limits
+    # Try a single filter + get_all_entries over the whole range (less RPC calls)
+    try:
+        flt = event_obj.create_filter(from_block=start, to_block=head)
+        return flt.get_all_entries()
+    except Exception:
+        pass
+
+    # If that still fails, fall back to slow per-block checks
     found = []
     for block_num in range(start, head + 1):
         try:
             entries = event_obj.get_logs(fromBlock=block_num, toBlock=block_num)
             found.extend(entries)
         except Exception:
-            # final fallback to create_filter (older providers)
             try:
                 flt = event_obj.create_filter(from_block=block_num, to_block=block_num)
                 entries = flt.get_all_entries()
