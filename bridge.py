@@ -107,37 +107,36 @@ def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_bu
 
 
 def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=5):
+    """
+    Return decoded event logs for the last n blocks for the given event.
+    Prefer event_obj.get_logs (Web3 v6) and fall back to per-block filtering if needed.
+    """
     head = w3.eth.block_number
     start = max(0, head - n_blocks + 1)
 
-    # 1) Preferred: one eth_getLogs over the full range
+    # First try a single-range get_logs (works well on many providers)
     try:
-        return event_obj.get_logs(fromBlock=start, toBlock=head)
+        entries = event_obj.get_logs(fromBlock=start, toBlock=head)
+        return entries
     except Exception:
         pass
 
-    # 2) Chunked eth_getLogs (reduces rate limit risk without per-block spam)
-    try:
-        found = []
-        step = 5  # small chunk
-        cur = start
-        while cur <= head:
-            end = min(head, cur + step - 1)
+    # Fallback: per-block to avoid RPC range limits
+    found = []
+    for block_num in range(start, head + 1):
+        try:
+            entries = event_obj.get_logs(fromBlock=block_num, toBlock=block_num)
+            found.extend(entries)
+        except Exception:
+            # final fallback to create_filter (older providers)
             try:
-                logs = event_obj.get_logs(fromBlock=cur, toBlock=end)
-                found.extend(logs)
+                flt = event_obj.create_filter(from_block=block_num, to_block=block_num)
+                entries = flt.get_all_entries()
+                found.extend(entries)
             except Exception:
-                # 3) Last resort: filter over the same chunk (use camelCase!)
-                try:
-                    flt = event_obj.create_filter(fromBlock=cur, toBlock=end)  # NOTE camelCase
-                    logs = flt.get_all_entries()
-                    found.extend(logs)
-                except Exception:
-                    pass
-            cur = end + 1
-        return found
-    except Exception:
-        return []
+                pass
+
+    return found
 
 
 # -----------------------
