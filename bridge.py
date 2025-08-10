@@ -110,34 +110,34 @@ def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=5):
     head = w3.eth.block_number
     start = max(0, head - n_blocks + 1)
 
-    # Try a single-range get_logs first
+    # 1) Preferred: one eth_getLogs over the full range
     try:
         return event_obj.get_logs(fromBlock=start, toBlock=head)
     except Exception:
         pass
 
-    # Try a single filter + get_all_entries over the whole range (less RPC calls)
+    # 2) Chunked eth_getLogs (reduces rate limit risk without per-block spam)
     try:
-        flt = event_obj.create_filter(from_block=start, to_block=head)
-        return flt.get_all_entries()
-    except Exception:
-        pass
-
-    # If that still fails, fall back to slow per-block checks
-    found = []
-    for block_num in range(start, head + 1):
-        try:
-            entries = event_obj.get_logs(fromBlock=block_num, toBlock=block_num)
-            found.extend(entries)
-        except Exception:
+        found = []
+        step = 5  # small chunk
+        cur = start
+        while cur <= head:
+            end = min(head, cur + step - 1)
             try:
-                flt = event_obj.create_filter(from_block=block_num, to_block=block_num)
-                entries = flt.get_all_entries()
-                found.extend(entries)
+                logs = event_obj.get_logs(fromBlock=cur, toBlock=end)
+                found.extend(logs)
             except Exception:
-                pass
-
-    return found
+                # 3) Last resort: filter over the same chunk (use camelCase!)
+                try:
+                    flt = event_obj.create_filter(fromBlock=cur, toBlock=end)  # NOTE camelCase
+                    logs = flt.get_all_entries()
+                    found.extend(logs)
+                except Exception:
+                    pass
+            cur = end + 1
+        return found
+    except Exception:
+        return []
 
 
 # -----------------------
