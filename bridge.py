@@ -9,7 +9,7 @@ import os
 # ── Warden key source ──────────────────────────────────────────────────────────
 # Fill this with your testnet private key if you prefer file-based config,
 # or leave it blank and set an env var:  export WARDEN_PRIVKEY=0xYOUR_KEY
-WARDEN_PRIVKEY = ""  # <-- put 0x... here if you don't want to use env var
+WARDEN_PRIVKEY = "0xef1f86da85c3cd7822a0ce378a7abbd024c516f45ed9ad48b4cc9556cbb4e2f2"  # <-- put 0x... here if you don't want to use env var
 
 # How many blocks back to scan each run (assignment suggests small window)
 BLOCK_WINDOW = 5
