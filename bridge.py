@@ -48,18 +48,14 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     if chain not in ['source','destination']:
         print( f"Invalid chain: {chain}" )
         return 0
-    
-    ci = load_contract_info(contract_info)
-    src_info = ci["source"]
-    dst_info = ci["destination"]
 
     # Connect both chains (we need both regardless of direction to send the counterpart tx)
     w3_src = connect_to("source")
     w3_dst = connect_to("destination")
 
     # Contracts
-    src_c = get_contract(w3_src, src_info["address"], src_info["abi"])
-    dst_c = get_contract(w3_dst, dst_info["address"], dst_info["abi"])
+    src_c = get_contract_info("source", contract_info)
+    dst_c = get_contract_info("destination", contract_info)
 
     # Signer (warden)
     acct = get_signer(os.environ.get("PRIV_ENV", DEFAULT_PRIV_ENV))
@@ -70,7 +66,3 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     else:
         # The grader created activity on DESTINATION; we bridge to SOURCE
         handle_destination_unwraps(w3_dst, w3_src, acct, dst_c, src_c)
-
-def load_contract_info(path="contract_info.json"):
-    with open(path, "r") as f:
-        return json.load(f)
