@@ -105,38 +105,47 @@ def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_bu
 
     raise RuntimeError(f"Failed to send transaction after retries: {last_err}")
 
-
 def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=5):
     """
-    Return decoded event logs for the last n blocks for the given event.
-    Prefer event_obj.get_logs (Web3 v6) and fall back to per-block filtering if needed.
+    Return decoded event logs for the last n blocks using filters + get_all_entries()
+    to minimize RPC calls. Falls back to small chunking if the provider enforces limits.
     """
     head = w3.eth.block_number
     start = max(0, head - n_blocks + 1)
 
-    # First try a single-range get_logs (works well on many providers)
-    try:
-        entries = event_obj.get_logs(fromBlock=start, toBlock=head)
-        return entries
-    except Exception:
-        pass
+    def _filter_once(fb, tb):
+        # One RPC to create filter, one RPC to fetch all entries
+        flt = event_obj.create_filter(from_block=fb, to_block=tb, argument_filters={})
+        return flt.get_all_entries()
 
-    # Fallback: per-block to avoid RPC range limits
+    # 1) Try one-shot filter over the entire window
+    try:
+        return _filter_once(start, head)
+    except Exception as e:
+        msg = str(e)
+
+    # 2) If the provider limits range, chunk the window
+    #    BSC testnet often needs smallish chunks; tune if needed.
+    CHUNK = 250
     found = []
-    for block_num in range(start, head + 1):
+    cur = start
+    while cur <= head:
+        to_blk = min(cur + CHUNK - 1, head)
         try:
-            entries = event_obj.get_logs(fromBlock=block_num, toBlock=block_num)
+            entries = _filter_once(cur, to_blk)
             found.extend(entries)
         except Exception:
-            # final fallback to create_filter (older providers)
+            # 3) Last resort: tiny per-block filter (still uses get_all_entries(), not get_logs)
             try:
-                flt = event_obj.create_filter(from_block=block_num, to_block=block_num)
-                entries = flt.get_all_entries()
-                found.extend(entries)
+                blkflt = event_obj.create_filter(from_block=cur, to_block=cur, argument_filters={})
+                found.extend(blkflt.get_all_entries())
             except Exception:
+                # swallow and continue to next block
                 pass
+        cur = to_blk + 1
 
     return found
+
 
 
 # -----------------------
