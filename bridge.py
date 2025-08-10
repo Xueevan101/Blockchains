@@ -70,3 +70,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     else:
         # The grader created activity on DESTINATION; we bridge to SOURCE
         handle_destination_unwraps(w3_dst, w3_src, acct, dst_c, src_c)
+
+def load_contract_info(path="contract_info.json"):
+    with open(path, "r") as f:
+        return json.load(f)
