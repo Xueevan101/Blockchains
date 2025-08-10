@@ -2,10 +2,8 @@ from web3 import Web3
 from web3.providers.rpc import HTTPProvider
 from web3.middleware import ExtraDataToPOAMiddleware  # Necessary for POA chains
 from eth_account import Account
-from datetime import datetime
 import json
 import time
-
 
 # -----------------------
 # Warden key (TESTNET ONLY)
@@ -58,10 +56,22 @@ def _contract_for(w3, chain_info):
     return w3.eth.contract(address=addr, abi=abi)
 
 
+def _get_raw_tx(signed):
+    """
+    Web3.py v5 uses 'rawTransaction'; v6 uses 'raw_transaction'.
+    """
+    raw = getattr(signed, "rawTransaction", None)
+    if raw is None:
+        raw = getattr(signed, "raw_transaction", None)
+    if raw is None:
+        raise AttributeError("SignedTransaction missing raw tx (neither rawTransaction nor raw_transaction present).")
+    return raw
+
+
 def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_buffer=20000, max_retries=2):
     """
     Builds, signs, and sends a transaction for the given contract function.
-    Uses legacy gasPrice for broad testnet compatibility.
+    Uses legacy gasPrice for broad testnet compatibility (works on BSC + AVAX).
     Retries on common nonce/gas hiccups.
     """
     try:
@@ -84,11 +94,13 @@ def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_bu
                 "chainId": w3.eth.chain_id
             })
             signed = w3.eth.account.sign_transaction(tx, private_key=sender_key)
-            tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            raw = _get_raw_tx(signed)
+            tx_hash = w3.eth.send_raw_transaction(raw)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
             return receipt
         except Exception as e:
             last_err = e
+            # brief backoff on nonce/gas issues
             time.sleep(2)
 
     raise RuntimeError(f"Failed to send transaction after retries: {last_err}")
@@ -97,21 +109,29 @@ def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_bu
 def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=5):
     """
     Return decoded event logs for the last n blocks for the given event.
-    Loops per-block to avoid RPC 'limit exceeded' errors on testnets.
+    Prefer event_obj.get_logs (Web3 v6) and fall back to per-block filtering if needed.
     """
     head = w3.eth.block_number
     start = max(0, head - n_blocks + 1)
-    found = []
 
+    # First try a single-range get_logs (works well on many providers)
+    try:
+        entries = event_obj.get_logs(fromBlock=start, toBlock=head)
+        return entries
+    except Exception:
+        pass
+
+    # Fallback: per-block to avoid RPC range limits
+    found = []
     for block_num in range(start, head + 1):
         try:
-            flt = event_obj.create_filter(from_block=block_num, to_block=block_num)
-            entries = flt.get_all_entries()
+            entries = event_obj.get_logs(fromBlock=block_num, toBlock=block_num)
             found.extend(entries)
         except Exception:
-            # Fallback path for providers that block create_filter:
+            # final fallback to create_filter (older providers)
             try:
-                entries = event_obj.get_logs(fromBlock=block_num, toBlock=block_num)
+                flt = event_obj.create_filter(from_block=block_num, to_block=block_num)
+                entries = flt.get_all_entries()
                 found.extend(entries)
             except Exception:
                 pass
