@@ -96,19 +96,25 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     # Helper: build, sign, send with gas estimate (+fallback)
     def _send_tx(w3, acct, fn):
         tx = fn.build_transaction({
-            "from": acct.address,
-            "nonce": w3.eth.get_transaction_count(acct.address),
-            "gasPrice": w3.eth.gas_price,
-            "chainId": w3.eth.chain_id,
+        "from": acct.address,
+        "nonce": w3.eth.get_transaction_count(acct.address),
+        "gasPrice": w3.eth.gas_price,
+        "chainId": w3.eth.chain_id,
         })
+    # Estimate gas with a safe fallback
         try:
             g = w3.eth.estimate_gas(tx)
-            tx["gas"] = int(g * 12 // 10)  # +20% buffer
+            tx["gas"] = int(g * 12 // 10)  # +20%
         except Exception:
             tx["gas"] = 400000
-        signed = acct.sign_transaction(tx)
-        return w3.eth.send_raw_transaction(signed.rawTransaction).hex()
 
+        signed = acct.sign_transaction(tx)
+    # web3.py v5: rawTransaction, v6: raw_transaction
+        raw = getattr(signed, "rawTransaction", None) or getattr(signed, "raw_transaction", None)
+        if raw is None:
+            raise RuntimeError("Could not find raw transaction bytes on SignedTransaction")
+
+        return w3.eth.send_raw_transaction(raw).hex()
     # Version-agnostic event fetching via eth_getLogs + process_log
     def fetch_events(w3, contract, event, address, frm, to):
         """
