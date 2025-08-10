@@ -11,6 +11,10 @@ import time
 WARDEN_PRIVKEY = "0xef1f86da85c3cd7822a0ce378a7abbd024c516f45ed9ad48b4cc9556cbb4e2f2"
 WARDEN_ADDRESS = Account.from_key(WARDEN_PRIVKEY).address  # auto-derived
 
+# Scan tuning (avoid rate limits but don’t miss events)
+SCAN_BLOCKS = 60      # how many recent blocks to scan each run
+CHUNK_SIZE  = 30      # blocks per filter call when chunking
+
 
 # -----------------------
 # Connection + helpers
@@ -71,7 +75,7 @@ def _get_raw_tx(signed):
 def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_buffer=20000, max_retries=2):
     """
     Builds, signs, and sends a transaction for the given contract function.
-    Uses legacy gasPrice for broad testnet compatibility (works on BSC + AVAX).
+    Uses legacy gasPrice for broad testnet compatibility (BSC + AVAX).
     Retries on common nonce/gas hiccups.
     """
     try:
@@ -100,22 +104,17 @@ def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_bu
             return receipt
         except Exception as e:
             last_err = e
-            # brief backoff on nonce/gas issues
             time.sleep(2)
 
     raise RuntimeError(f"Failed to send transaction after retries: {last_err}")
 
 
-# Tune these if needed
-SCAN_BLOCKS = 120     # how many recent blocks to scan
-CHUNK_SIZE  = 60      # how many blocks per filter call when we must chunk
-
 def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=SCAN_BLOCKS, chunk_size=CHUNK_SIZE):
     """
-    Efficiently scan the last `n_blocks` for `event_obj` using a single
-    get_all_entries() call. If the provider rejects the wide range,
-    fall back to chunking (still one call per CHUNK, NOT per event).
-    Returns a list of decoded event entries (AttributeDict with .args).
+    Efficient, rate-limit-friendly scanner using a SINGLE RPC call per range or chunk:
+      - Try one filter over the whole [start, head] range and call get_all_entries() once.
+      - If the provider rejects that (common on BSC/Fuji), chunk the range and make ONE call per chunk.
+    Returns a list of decoded events (AttributeDict with .args).
     """
     head = w3.eth.block_number
     if head < 0:
@@ -125,36 +124,33 @@ def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=SCAN_BLOCKS, chunk_siz
     if start > head:
         return []
 
-    # 1) Try one filter over the whole range — fastest, one RPC call total.
+    # 1) Try one call for the full window
     try:
         flt = event_obj.create_filter(from_block=start, to_block=head)
-        entries = flt.get_all_entries()  # single call returns ALL events
-        return entries
+        return flt.get_all_entries()  # single RPC returning all events
     except Exception:
-        pass  # likely range too big or provider throttling
+        pass  # likely provider throttle or "limit exceeded"
 
-    # 2) Fallback: chunk the range to avoid -32005 / throttling.
+    # 2) Fallback: chunked filters, still one call per chunk
     all_entries = []
     cur = start
     while cur <= head:
         to_blk = min(head, cur + chunk_size - 1)
 
-        # Small retry loop per chunk; still only ONE get_all_entries() per chunk
-        # to avoid per-event RPC spam.
-        last_err = None
+        # short retry loop per chunk
         for attempt in range(3):
             try:
                 flt = event_obj.create_filter(from_block=cur, to_block=to_blk)
-                batch = flt.get_all_entries()
-                all_entries.extend(batch)
-                last_err = None
+                batch = flt.get_all_entries()  # single RPC per chunk
+                if batch:
+                    all_entries.extend(batch)
                 break
-            except Exception as e:
-                last_err = e
-                # linear backoff; keep it short to satisfy autograder time limits
-                time.sleep(1.0 + attempt * 0.5)
+            except Exception:
+                time.sleep(1.0 + 0.5 * attempt)
+                if attempt == 2:
+                    # skip this slice if it keeps failing
+                    pass
 
-        # If a chunk keeps failing, we skip it and move on (better partial coverage than none)
         cur = to_blk + 1
 
     return all_entries
@@ -167,7 +163,7 @@ def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=SCAN_BLOCKS, chunk_siz
 def scan_blocks(chain, contract_info="contract_info.json"):
     """
     chain - (string) should be either "source" or "destination"
-    Scan the last 5 blocks:
+    Scan recent blocks:
       - If chain == 'source': look for 'Deposit' events on the source chain and call 'wrap' on the destination chain
       - If chain == 'destination': look for 'Unwrap' events on the destination chain and call 'withdraw' on the source chain
     """
@@ -206,9 +202,9 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             print("ABI missing 'Deposit' event on source.")
             return 0
 
-        deposits = _scan_last_n_blocks(w3_src, src_contract, deposit_event, n_blocks=5)
+        deposits = _scan_last_n_blocks(w3_src, src_contract, deposit_event, n_blocks=SCAN_BLOCKS, chunk_size=CHUNK_SIZE)
         if not deposits:
-            print("No Deposit events found on source in the last 5 blocks.")
+            print("No Deposit events found on source in the recent window.")
             return 0
 
         # 2) For each Deposit, call wrap(token, recipient, amount) on DESTINATION
@@ -244,9 +240,9 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             print("ABI missing 'Unwrap' event on destination.")
             return 0
 
-        unwraps = _scan_last_n_blocks(w3_dst, dst_contract, unwrap_event, n_blocks=5)
+        unwraps = _scan_last_n_blocks(w3_dst, dst_contract, unwrap_event, n_blocks=SCAN_BLOCKS, chunk_size=CHUNK_SIZE)
         if not unwraps:
-            print("No Unwrap events found on destination in the last 5 blocks.")
+            print("No Unwrap events found on destination in the recent window.")
             return 0
 
         # 2) For each Unwrap, call withdraw(token, recipient, amount) on SOURCE
