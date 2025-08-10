@@ -1,5 +1,6 @@
 from web3 import Web3
-from web3.middleware import ExtraDataToPOAMiddleware  # Necessary for POA chains (Fuji, BSC testnet)
+from web3.providers.rpc import HTTPProvider
+from web3.middleware import ExtraDataToPOAMiddleware  # Necessary for POA chains
 from eth_account import Account
 import json
 import time
@@ -9,6 +10,7 @@ import time
 # -----------------------
 WARDEN_PRIVKEY = "0xef1f86da85c3cd7822a0ce378a7abbd024c516f45ed9ad48b4cc9556cbb4e2f2"
 WARDEN_ADDRESS = Account.from_key(WARDEN_PRIVKEY).address  # auto-derived
+
 
 # -----------------------
 # Connection + helpers
@@ -104,52 +106,37 @@ def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_bu
     raise RuntimeError(f"Failed to send transaction after retries: {last_err}")
 
 
-# ---------- NEW: range + chunked filter helper ----------
-def _fetch_events_via_filter(event_obj, from_block, to_block, chunk_size=500, sleep_s=0.5):
+def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=5):
     """
-    Fetch events using a filter + get_all_entries() across [from_block, to_block],
-    chunking the range to avoid RPC 'limit exceeded' errors. Returns a flat list.
+    Return decoded event logs for the last n blocks for the given event.
+    Prefer event_obj.get_logs (Web3 v6) and fall back to per-block filtering if needed.
     """
-    collected = []
-    cursor = from_block
-    while cursor <= to_block:
-        end = min(cursor + chunk_size - 1, to_block)
-        try:
-            flt = event_obj.create_filter(from_block=cursor, to_block=end)
-            entries = flt.get_all_entries()  # single call returns a list of decoded logs
-            # entries are already decoded event dicts (w/ 'args')
-            collected.extend(entries)
-        except Exception as e:
-            # If the chunk is still too big, shrink and retry this same window
-            if chunk_size > 50:
-                chunk_size = max(50, chunk_size // 2)
-                continue
-            # As a last resort, just skip this tiny slice to keep the loop moving
-            print(f"[warn] get_all_entries failed for {cursor}-{end}: {e}")
-        finally:
-            cursor = end + 1
-            if sleep_s:
-                time.sleep(sleep_s)
-    return collected
-
-
-def _last_n_range(w3, n_blocks):
     head = w3.eth.block_number
     start = max(0, head - n_blocks + 1)
-    return start, head
 
+    # First try a single-range get_logs (works well on many providers)
+    try:
+        entries = event_obj.get_logs(fromBlock=start, toBlock=head)
+        return entries
+    except Exception:
+        pass
 
-def _arg(ev, name):
-    """
-    Access event args in a Web3.py-version-tolerant way.
-    Prefer dict-style to avoid AttributeError on some versions.
-    """
-    # ev can be AttributeDict or dict with "args"
-    args = ev.get("args") if isinstance(ev, dict) else getattr(ev, "args", None)
-    if args is None:
-        raise AttributeError("Event has no 'args'")
-    # args is typically an AttributeDict; use dict-style for robustness
-    return args[name]
+    # Fallback: per-block to avoid RPC range limits
+    found = []
+    for block_num in range(start, head + 1):
+        try:
+            entries = event_obj.get_logs(fromBlock=block_num, toBlock=block_num)
+            found.extend(entries)
+        except Exception:
+            # final fallback to create_filter (older providers)
+            try:
+                flt = event_obj.create_filter(from_block=block_num, to_block=block_num)
+                entries = flt.get_all_entries()
+                found.extend(entries)
+            except Exception:
+                pass
+
+    return found
 
 
 # -----------------------
@@ -159,7 +146,7 @@ def _arg(ev, name):
 def scan_blocks(chain, contract_info="contract_info.json"):
     """
     chain - (string) should be either "source" or "destination"
-    Scan the last N_BLOCKS:
+    Scan the last 5 blocks:
       - If chain == 'source': look for 'Deposit' events on the source chain and call 'wrap' on the destination chain
       - If chain == 'destination': look for 'Unwrap' events on the destination chain and call 'withdraw' on the source chain
     """
@@ -190,11 +177,6 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     warden_addr_dst = warden_addr_src
     warden_key_dst = warden_key_src
 
-    # Choose how many blocks and the chunk size per request.
-    # BSC testnet often needs small-ish chunks to avoid -32005 limit exceeded.
-    N_BLOCKS = 5          # your window
-    CHUNK_SIZE = 500      # adjust up/down as needed (100–1000 typical; drop to 250/100/50 if limits persist)
-
     if chain == 'source':
         # 1) Find Deposit(token, recipient, amount) on SOURCE
         try:
@@ -203,22 +185,16 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             print("ABI missing 'Deposit' event on source.")
             return 0
 
-        start, head = _last_n_range(w3_src, N_BLOCKS)
-        deposits = _fetch_events_via_filter(deposit_event, start, head, chunk_size=CHUNK_SIZE)
-
+        deposits = _scan_last_n_blocks(w3_src, src_contract, deposit_event, n_blocks=5)
         if not deposits:
-            print("No Deposit events found on source in the last", N_BLOCKS, "blocks.")
+            print("No Deposit events found on source in the last 5 blocks.")
             return 0
 
         # 2) For each Deposit, call wrap(token, recipient, amount) on DESTINATION
         for ev in deposits:
-            try:
-                token = _arg(ev, "token")
-                recipient = _arg(ev, "recipient")
-                amount = _arg(ev, "amount")
-            except Exception as e:
-                print(f"[warn] Could not parse Deposit event: {e}")
-                continue
+            token = ev.args.token
+            recipient = ev.args.recipient
+            amount = ev.args.amount
 
             print(f"[{w3_src.eth.block_number}] Source Deposit -> token={token}, recipient={recipient}, amount={amount}")
 
@@ -247,22 +223,16 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             print("ABI missing 'Unwrap' event on destination.")
             return 0
 
-        start, head = _last_n_range(w3_dst, N_BLOCKS)
-        unwraps = _fetch_events_via_filter(unwrap_event, start, head, chunk_size=CHUNK_SIZE)
-
+        unwraps = _scan_last_n_blocks(w3_dst, dst_contract, unwrap_event, n_blocks=5)
         if not unwraps:
-            print("No Unwrap events found on destination in the last", N_BLOCKS, "blocks.")
+            print("No Unwrap events found on destination in the last 5 blocks.")
             return 0
 
         # 2) For each Unwrap, call withdraw(token, recipient, amount) on SOURCE
         for ev in unwraps:
-            try:
-                token = _arg(ev, "token")
-                recipient = _arg(ev, "recipient")
-                amount = _arg(ev, "amount")
-            except Exception as e:
-                print(f"[warn] Could not parse Unwrap event: {e}")
-                continue
+            token = ev.args.token
+            recipient = ev.args.recipient
+            amount = ev.args.amount
 
             print(f"[{w3_dst.eth.block_number}] Destination Unwrap -> token={token}, recipient={recipient}, amount={amount}")
 
