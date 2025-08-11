@@ -6,20 +6,14 @@ import json
 import time
 import os
 
-# -----------------------
-# Warden key (TESTNET ONLY)
-# -----------------------
-WARDEN_PRIVKEY = "0xef1f86da85c3cd7822a0ce378a7abbd024c516f45ed9ad48b4cc9556cbb4e2f2"
-WARDEN_ADDRESS = Account.from_key(WARDEN_PRIVKEY).address  # auto-derived
 
-# Small files to avoid reprocessing and missing windows
+# my private secret key
+WARDEN_PRIVKEY = "0xef1f86da85c3cd7822a0ce378a7abbd024c516f45ed9ad48b4cc9556cbb4e2f2"
+WARDEN_ADDRESS = Account.from_key(WARDEN_PRIVKEY).address 
+#tried to store events in json file so they wouldnt reprocess
 STATE_FILE = "bridge_state.json"
 PROCESSED_FILE = "processed_events.json"
 
-
-# -----------------------
-# Connection + helpers
-# -----------------------
 
 def connect_to(chain):
     """
@@ -51,7 +45,7 @@ def get_contract_info(chain, contract_info):
         return 0
     return contracts[chain]
 
-
+#helper function that wraps my abi and contract
 def _contract_for(w3, chain_info):
     """
     Create a contract object for the deployed address + ABI.
@@ -60,11 +54,8 @@ def _contract_for(w3, chain_info):
     abi = chain_info["abi"]
     return w3.eth.contract(address=addr, abi=abi)
 
-
+#just checks if using v5 or v6 for web3. Had trouble when running in foundry not sure if this does anything
 def _get_raw_tx(signed):
-    """
-    Web3.py v5 uses 'rawTransaction'; v6 uses 'raw_transaction'.
-    """
     raw = getattr(signed, "rawTransaction", None)
     if raw is None:
         raw = getattr(signed, "raw_transaction", None)
@@ -72,21 +63,14 @@ def _get_raw_tx(signed):
         raise AttributeError("SignedTransaction missing raw tx (neither rawTransaction nor raw_transaction present).")
     return raw
 
-
+#taken from previous assignment, we try to build and send a token and verify that it is succesful
 def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_buffer=20000, max_retries=2):
-    """
-    Builds, signs, and sends a transaction for the given contract function.
-    Uses legacy gasPrice for broad testnet compatibility (works on BSC + AVAX).
-    Retries on common nonce/gas hiccups.
-    """
     try:
         gas_estimate = contract_fn.estimate_gas({"from": sender_addr, "value": value})
     except Exception:
-        gas_estimate = 300000  # fallback
-
+        gas_estimate = 300000
     gas = gas_estimate + gas_buffer
     last_err = None
-
     for attempt in range(max_retries + 1):
         try:
             nonce = w3.eth.get_transaction_count(sender_addr)
@@ -102,7 +86,6 @@ def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_bu
             raw = _get_raw_tx(signed)
             tx_hash = w3.eth.send_raw_transaction(raw)
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
-            # Only treat as success if it actually succeeded
             if getattr(receipt, "status", 0) != 1:
                 raise RuntimeError(f"Transaction reverted: {tx_hash.hex()}")
             return receipt
@@ -112,33 +95,24 @@ def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_bu
 
     raise RuntimeError(f"Failed to send transaction after retries: {last_err}")
 
-
+#here, we normalize our arguments
 def _extract_bridge_args(ev):
-    """
-    Normalize event args across ABIs: handles token/underlying/underlying_token,
-    recipient/to, amount/value.
-    """
     args = ev.args
-
-    # token
     token = getattr(args, "token", None)
     if token is None:
         token = getattr(args, "underlying", None)
     if token is None:
         token = getattr(args, "underlying_token", None)
 
-    # recipient
     recipient = getattr(args, "recipient", None)
     if recipient is None:
         recipient = getattr(args, "to", None)
 
-    # amount
     amount = getattr(args, "amount", None)
     if amount is None:
         amount = getattr(args, "value", None)
 
     if token is None or recipient is None or amount is None:
-        # Try mapping-style access if available
         try:
             keys = list(args.keys())
         except Exception:
@@ -150,7 +124,7 @@ def _extract_bridge_args(ev):
     amount = int(amount)
     return token, recipient, amount
 
-
+#some helper functions below
 def _load_state():
     if os.path.exists(STATE_FILE):
         try:
@@ -175,12 +149,8 @@ def _load_processed():
 def _save_processed(s):
     json.dump(sorted(list(s)), open(PROCESSED_FILE, "w"))
 
-
+#i try to stick to the last 5 blocks and use get all entries to avoid the rpc error. I still am getting the rpc error so not sure if it works as intended
 def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=5, argument_filters=None):
-    """
-    Return decoded event logs for the last n blocks using filters + get_all_entries()
-    to minimize RPC calls. Falls back to small chunking if the provider enforces limits.
-    """
     if argument_filters is None:
         argument_filters = {}
 
@@ -214,12 +184,8 @@ def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=5, argument_filters=No
 
     return found
 
-
+#use this if we scanned before, start scanning from where we left off based on the outputted json file
 def _scan_from_last(w3, event_obj, state_key, safety_back=200, argument_filters=None):
-    """
-    Persistent range scanning: start from last scanned+1 (or head - safety_back on first run),
-    chunk via filters->get_all_entries, and update the state.
-    """
     if argument_filters is None:
         argument_filters = {}
 
@@ -257,17 +223,10 @@ def _scan_from_last(w3, event_obj, state_key, safety_back=200, argument_filters=
                         except Exception:
                             pass
         cur = to_blk + 1
-
-    # Update state to the head we actually scanned to
     state[state_key] = head
     _save_state(state)
     return found, state, head, start
-
-
-# -----------------------
-# Main bridge logic
-# -----------------------
-
+#finally, our scan blocks code modified from the listener script. when source scan for a deposit and wrap on destination. when destination, scan for an unwrap and call withdraw on the source token. persistently scanes so we dont double process
 def scan_blocks(chain, contract_info="contract_info.json"):
     """
     chain - (string) should be either "source" or "destination"
@@ -278,8 +237,6 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     if chain not in ['source', 'destination']:
         print(f"Invalid chain: {chain}")
         return 0
-
-    # Load per-chain sections
     try:
         with open(contract_info, 'r') as f:
             contracts_all = json.load(f)
@@ -290,13 +247,13 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     src_info = contracts_all["source"]
     dst_info = contracts_all["destination"]
 
-    # Connect RPCs + contract objects
+    #Connect RPCs plus contract objects
     w3_src = connect_to("source")
     w3_dst = connect_to("destination")
     src_contract = _contract_for(w3_src, src_info)
     dst_contract = _contract_for(w3_dst, dst_info)
 
-    # Use the hardcoded warden key/address on BOTH chains
+    #Use our hard coded secret key
     warden_addr_src = Web3.to_checksum_address(WARDEN_ADDRESS)
     warden_key_src = WARDEN_PRIVKEY
     warden_addr_dst = warden_addr_src
@@ -305,14 +262,14 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     processed = _load_processed()
 
     if chain == 'source':
-        # 1) Find Deposit(...) on SOURCE
+        #here we try to find the deposit on source
         try:
             deposit_event = src_contract.events.Deposit
         except AttributeError:
             print("ABI missing 'Deposit' event on source.")
             return 0
 
-        # Persistent scan to avoid missing events due to short windows
+        #Scan persistently so we don't miss any windows
         deposits, state, head, start = _scan_from_last(
             w3_src, deposit_event, state_key="source_last", safety_back=200
         )
@@ -320,7 +277,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             print(f"No Deposit events found on source in blocks {start}-{head}.")
             return 0
 
-        # 2) For each Deposit, call wrap(token, recipient, amount) on DESTINATION
+        #Here, we do the wrapping
         for ev in deposits:
             evt_id = f"{ev.transactionHash.hex()}:{ev.logIndex}"
             if evt_id in processed:
@@ -355,7 +312,7 @@ def scan_blocks(chain, contract_info="contract_info.json"):
         _save_processed(processed)
 
     elif chain == 'destination':
-        # 1) Find Unwrap(...) on DESTINATION
+        #Next we do the unwrapping
         try:
             unwrap_event = dst_contract.events.Unwrap
         except AttributeError:
@@ -369,26 +326,22 @@ def scan_blocks(chain, contract_info="contract_info.json"):
             print(f"No Unwrap events found on destination in blocks {start}-{head}.")
             return 0
 
-        # 2) For each Unwrap, call withdraw(token, recipient, amount) on SOURCE
+        #Here, we unwrap and call withdraw on the source
         for ev in unwraps:
             evt_id = f"{ev.transactionHash.hex()}:{ev.logIndex}"
             if evt_id in processed:
                 continue
-
             try:
                 token, recipient, amount = _extract_bridge_args(ev)
             except Exception as e:
                 print(f"Could not parse Unwrap event: {e}")
                 continue
-
             print(f"[{w3_dst.eth.block_number}] Destination Unwrap -> token={token}, recipient={recipient}, amount={amount}")
-
             try:
                 fn = src_contract.functions.withdraw(token, recipient, amount)
             except Exception as e:
                 print(f"Source contract missing 'withdraw' or wrong ABI: {e}")
                 continue
-
             try:
                 receipt = _build_and_send_tx(
                     w3_src,
@@ -400,7 +353,6 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                 processed.add(evt_id)
             except Exception as e:
                 print(f"withdraw() failed on source: {e}")
-
+                #save our process below to scan in the future
         _save_processed(processed)
-
     return 1
