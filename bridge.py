@@ -1,4 +1,3 @@
-# bridge.py
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 from eth_account import Account
@@ -256,4 +255,110 @@ def scan_blocks(chain, contract_info="contract_info.json"):
 
     try:
         with open(contract_info, 'r') as f:
-            contracts_all = json.load(f)_
+            contracts_all = json.load(f)
+    except Exception as e:
+        print(f"Failed to read contract info\nPlease contact your instructor\n{e}")
+        return 0
+
+    src_info = contracts_all["source"]
+    dst_info = contracts_all["destination"]
+
+    # Web3 + contracts
+    w3_src = connect_to("source")
+    w3_dst = connect_to("destination")
+    src_contract = _contract_for(w3_src, src_info)
+    dst_contract = _contract_for(w3_dst, dst_info)
+
+    # Warden on both chains (testnet simplicity)
+    warden_addr_src = Web3.to_checksum_address(WARDEN_ADDRESS)
+    warden_addr_dst = warden_addr_src
+
+    processed = _load_processed()
+
+    if chain == 'source':
+        # (1) Scan Deposits on SOURCE
+        try:
+            deposit_event = src_contract.events.Deposit
+        except AttributeError:
+            print("ABI missing 'Deposit' event on source.")
+            return 0
+
+        deposits, state, head, start = _scan_from_last(
+            w3_src, deposit_event, state_key="source_last"
+        )
+        if not deposits:
+            print(f"No Deposit events found on source in blocks {start}-{head}.")
+            return 0
+
+        # (2) For each Deposit, call wrap on DESTINATION
+        for ev in deposits:
+            evt_id = f"{ev.transactionHash.hex()}:{ev.logIndex}"
+            if evt_id in processed:
+                continue
+
+            try:
+                token, recipient, amount = _extract_bridge_args(ev)
+            except Exception as e:
+                print(f"Could not parse Deposit event: {e}")
+                continue
+
+            print(f"[{w3_src.eth.block_number}] Source Deposit -> token={token}, recipient={recipient}, amount={amount}")
+
+            try:
+                rcpt = _build_and_send_tx(
+                    w3_dst,
+                    dst_contract.functions.wrap(token, recipient, amount),
+                    sender_addr=warden_addr_dst,
+                    sender_key=WARDEN_PRIVKEY
+                )
+                print(f"wrap() confirmed on destination (block {rcpt.blockNumber}): {rcpt.transactionHash.hex()}")
+                processed.add(evt_id)
+            except Exception as e:
+                print(f"wrap() failed on destination: {e}")
+
+        _save_processed(processed)
+
+    else:  # chain == 'destination'
+        # (1) Scan Unwraps on DESTINATION
+        try:
+            unwrap_event = dst_contract.events.Unwrap
+        except AttributeError:
+            print("ABI missing 'Unwrap' event on destination.")
+            return 0
+
+        unwraps, state, head, start = _scan_from_last(
+            w3_dst, unwrap_event, state_key="destination_last"
+        )
+        if not unwraps:
+            print(f"No Unwrap events found on destination in blocks {start}-{head}.")
+            return 0
+
+        # (2) For each Unwrap, call withdraw on SOURCE
+        for ev in unwraps:
+            evt_id = f"{ev.transactionHash.hex()}:{ev.logIndex}"
+            if evt_id in processed:
+                continue
+
+            try:
+                token, recipient, amount = _extract_bridge_args(ev)
+            except Exception as e:
+                print(f"Could not parse Unwrap event: {e}")
+                continue
+
+            print(f"[{w3_dst.eth.block_number}] Destination Unwrap -> token={token}, recipient={recipient}, amount={amount}")
+
+            try:
+                rcpt = _build_and_send_tx(
+                    w3_src,
+                    src_contract.functions.withdraw(token, recipient, amount),
+                    sender_addr=warden_addr_src,
+                    sender_key=WARDEN_PRIVKEY
+                )
+                print(f"withdraw() confirmed on source (block {rcpt.blockNumber}): {rcpt.transactionHash.hex()}")
+                processed.add(evt_id)
+            except Exception as e:
+                print(f"withdraw() failed on source: {e}")
+
+        _save_processed(processed)
+
+    return 1
