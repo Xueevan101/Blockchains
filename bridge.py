@@ -4,17 +4,12 @@ from web3.middleware import ExtraDataToPOAMiddleware  # Necessary for POA chains
 from eth_account import Account
 import json
 import time
-import os
 
 # -----------------------
 # Warden key (TESTNET ONLY)
 # -----------------------
 WARDEN_PRIVKEY = "0xef1f86da85c3cd7822a0ce378a7abbd024c516f45ed9ad48b4cc9556cbb4e2f2"
 WARDEN_ADDRESS = Account.from_key(WARDEN_PRIVKEY).address  # auto-derived
-
-# Small files to avoid reprocessing and missing windows
-STATE_FILE = "bridge_state.json"
-PROCESSED_FILE = "processed_events.json"
 
 
 # -----------------------
@@ -102,100 +97,35 @@ def _build_and_send_tx(w3, contract_fn, sender_addr, sender_key, value=0, gas_bu
             raw = _get_raw_tx(signed)
             tx_hash = w3.eth.send_raw_transaction(raw)
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
-            # Only treat as success if it actually succeeded
-            if getattr(receipt, "status", 0) != 1:
-                raise RuntimeError(f"Transaction reverted: {tx_hash.hex()}")
             return receipt
         except Exception as e:
             last_err = e
+            # brief backoff on nonce/gas issues
             time.sleep(2)
 
     raise RuntimeError(f"Failed to send transaction after retries: {last_err}")
 
-
-def _extract_bridge_args(ev):
-    """
-    Normalize event args across ABIs: handles token/underlying/underlying_token,
-    recipient/to, amount/value.
-    """
-    args = ev.args
-
-    # token
-    token = getattr(args, "token", None)
-    if token is None:
-        token = getattr(args, "underlying", None)
-    if token is None:
-        token = getattr(args, "underlying_token", None)
-
-    # recipient
-    recipient = getattr(args, "recipient", None)
-    if recipient is None:
-        recipient = getattr(args, "to", None)
-
-    # amount
-    amount = getattr(args, "amount", None)
-    if amount is None:
-        amount = getattr(args, "value", None)
-
-    if token is None or recipient is None or amount is None:
-        # Try mapping-style access if available
-        try:
-            keys = list(args.keys())
-        except Exception:
-            keys = []
-        raise ValueError(f"Unrecognized event arg names; available: {keys}")
-
-    token = Web3.to_checksum_address(token)
-    recipient = Web3.to_checksum_address(recipient)
-    amount = int(amount)
-    return token, recipient, amount
-
-
-def _load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            return json.load(open(STATE_FILE))
-        except Exception:
-            pass
-    return {"source_last": 0, "destination_last": 0}
-
-
-def _save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
-
-
-def _load_processed():
-    try:
-        return set(json.load(open(PROCESSED_FILE)))
-    except Exception:
-        return set()
-
-
-def _save_processed(s):
-    json.dump(sorted(list(s)), open(PROCESSED_FILE, "w"))
-
-
-def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=5, argument_filters=None):
+def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=5):
     """
     Return decoded event logs for the last n blocks using filters + get_all_entries()
     to minimize RPC calls. Falls back to small chunking if the provider enforces limits.
     """
-    if argument_filters is None:
-        argument_filters = {}
-
     head = w3.eth.block_number
     start = max(0, head - n_blocks + 1)
 
     def _filter_once(fb, tb):
-        flt = event_obj.create_filter(from_block=fb, to_block=tb, argument_filters=argument_filters)
+        # One RPC to create filter, one RPC to fetch all entries
+        flt = event_obj.create_filter(from_block=fb, to_block=tb, argument_filters={})
         return flt.get_all_entries()
 
+    # 1) Try one-shot filter over the entire window
     try:
         return _filter_once(start, head)
-    except Exception:
-        pass
+    except Exception as e:
+        msg = str(e)
 
+    # 2) If the provider limits range, chunk the window
+    #    BSC testnet often needs smallish chunks; tune if needed.
     CHUNK = 250
     found = []
     cur = start
@@ -205,63 +135,17 @@ def _scan_last_n_blocks(w3, contract, event_obj, n_blocks=5, argument_filters=No
             entries = _filter_once(cur, to_blk)
             found.extend(entries)
         except Exception:
+            # 3) Last resort: tiny per-block filter (still uses get_all_entries(), not get_logs)
             try:
-                blkflt = event_obj.create_filter(from_block=cur, to_block=cur, argument_filters=argument_filters)
+                blkflt = event_obj.create_filter(from_block=cur, to_block=cur, argument_filters={})
                 found.extend(blkflt.get_all_entries())
             except Exception:
+                # swallow and continue to next block
                 pass
         cur = to_blk + 1
 
     return found
 
-
-def _scan_from_last(w3, event_obj, state_key, safety_back=200, argument_filters=None):
-    """
-    Persistent range scanning: start from last scanned+1 (or head - safety_back on first run),
-    chunk via filters->get_all_entries, and update the state.
-    """
-    if argument_filters is None:
-        argument_filters = {}
-
-    state = _load_state()
-    head = w3.eth.block_number
-    start = (state.get(state_key) or max(0, head - safety_back)) + 1
-    if start > head:
-        return [], state, head, start
-
-    def _filter_once(fb, tb):
-        flt = event_obj.create_filter(from_block=fb, to_block=tb, argument_filters=argument_filters)
-        return flt.get_all_entries()
-
-    CHUNK = 500
-    found = []
-    cur = start
-    while cur <= head:
-        to_blk = min(cur + CHUNK - 1, head)
-        try:
-            entries = _filter_once(cur, to_blk)
-            found.extend(entries)
-        except Exception:
-            # fallback to smaller chunks
-            mid = (cur + to_blk) // 2
-            for fb, tb in [(cur, mid), (mid + 1, to_blk)]:
-                try:
-                    entries = _filter_once(fb, tb)
-                    found.extend(entries)
-                except Exception:
-                    # last resort: per-block
-                    for b in range(fb, tb + 1):
-                        try:
-                            flt = event_obj.create_filter(from_block=b, to_block=b, argument_filters=argument_filters)
-                            found.extend(flt.get_all_entries())
-                        except Exception:
-                            pass
-        cur = to_blk + 1
-
-    # Update state to the head we actually scanned to
-    state[state_key] = head
-    _save_state(state)
-    return found, state, head, start
 
 
 # -----------------------
@@ -271,9 +155,9 @@ def _scan_from_last(w3, event_obj, state_key, safety_back=200, argument_filters=
 def scan_blocks(chain, contract_info="contract_info.json"):
     """
     chain - (string) should be either "source" or "destination"
-    When 'source': scan for Deposit and call wrap on destination
-    When 'destination': scan for Unwrap and call withdraw on source
-    Uses persistent scanning to avoid window misses and dedupes events to avoid double-processing.
+    Scan the last 5 blocks:
+      - If chain == 'source': look for 'Deposit' events on the source chain and call 'wrap' on the destination chain
+      - If chain == 'destination': look for 'Unwrap' events on the destination chain and call 'withdraw' on the source chain
     """
     if chain not in ['source', 'destination']:
         print(f"Invalid chain: {chain}")
@@ -302,35 +186,24 @@ def scan_blocks(chain, contract_info="contract_info.json"):
     warden_addr_dst = warden_addr_src
     warden_key_dst = warden_key_src
 
-    processed = _load_processed()
-
     if chain == 'source':
-        # 1) Find Deposit(...) on SOURCE
+        # 1) Find Deposit(token, recipient, amount) on SOURCE
         try:
             deposit_event = src_contract.events.Deposit
         except AttributeError:
             print("ABI missing 'Deposit' event on source.")
             return 0
 
-        # Persistent scan to avoid missing events due to short windows
-        deposits, state, head, start = _scan_from_last(
-            w3_src, deposit_event, state_key="source_last", safety_back=200
-        )
+        deposits = _scan_last_n_blocks(w3_src, src_contract, deposit_event, n_blocks=5)
         if not deposits:
-            print(f"No Deposit events found on source in blocks {start}-{head}.")
+            print("No Deposit events found on source in the last 5 blocks.")
             return 0
 
         # 2) For each Deposit, call wrap(token, recipient, amount) on DESTINATION
         for ev in deposits:
-            evt_id = f"{ev.transactionHash.hex()}:{ev.logIndex}"
-            if evt_id in processed:
-                continue
-
-            try:
-                token, recipient, amount = _extract_bridge_args(ev)
-            except Exception as e:
-                print(f"Could not parse Deposit event: {e}")
-                continue
+            token = ev.args.token
+            recipient = ev.args.recipient
+            amount = ev.args.amount
 
             print(f"[{w3_src.eth.block_number}] Source Deposit -> token={token}, recipient={recipient}, amount={amount}")
 
@@ -347,39 +220,28 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                     sender_addr=warden_addr_dst,
                     sender_key=warden_key_dst
                 )
-                print(f"wrap() confirmed on destination (block {receipt.blockNumber}): {receipt.transactionHash.hex()}")
-                processed.add(evt_id)
+                print(f"wrap() tx sent on destination: {receipt.transactionHash.hex()}")
             except Exception as e:
                 print(f"wrap() failed on destination: {e}")
 
-        _save_processed(processed)
-
     elif chain == 'destination':
-        # 1) Find Unwrap(...) on DESTINATION
+        # 1) Find Unwrap(token, recipient, amount) on DESTINATION
         try:
             unwrap_event = dst_contract.events.Unwrap
         except AttributeError:
             print("ABI missing 'Unwrap' event on destination.")
             return 0
 
-        unwraps, state, head, start = _scan_from_last(
-            w3_dst, unwrap_event, state_key="destination_last", safety_back=200
-        )
+        unwraps = _scan_last_n_blocks(w3_dst, dst_contract, unwrap_event, n_blocks=5)
         if not unwraps:
-            print(f"No Unwrap events found on destination in blocks {start}-{head}.")
+            print("No Unwrap events found on destination in the last 5 blocks.")
             return 0
 
         # 2) For each Unwrap, call withdraw(token, recipient, amount) on SOURCE
         for ev in unwraps:
-            evt_id = f"{ev.transactionHash.hex()}:{ev.logIndex}"
-            if evt_id in processed:
-                continue
-
-            try:
-                token, recipient, amount = _extract_bridge_args(ev)
-            except Exception as e:
-                print(f"Could not parse Unwrap event: {e}")
-                continue
+            token = ev.args.token
+            recipient = ev.args.recipient
+            amount = ev.args.amount
 
             print(f"[{w3_dst.eth.block_number}] Destination Unwrap -> token={token}, recipient={recipient}, amount={amount}")
 
@@ -396,11 +258,8 @@ def scan_blocks(chain, contract_info="contract_info.json"):
                     sender_addr=warden_addr_src,
                     sender_key=warden_key_src
                 )
-                print(f"withdraw() confirmed on source (block {receipt.blockNumber}): {receipt.transactionHash.hex()}")
-                processed.add(evt_id)
+                print(f"withdraw() tx sent on source: {receipt.transactionHash.hex()}")
             except Exception as e:
                 print(f"withdraw() failed on source: {e}")
-
-        _save_processed(processed)
 
     return 1
